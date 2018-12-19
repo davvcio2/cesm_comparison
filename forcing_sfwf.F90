@@ -9,7 +9,7 @@
 !  surface fresh water flux.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: forcing_sfwf.F90 12674 2008-10-31 22:21:32Z njn01 $
+!  SVN:$Id: forcing_sfwf.F90 24379 2010-08-13 19:54:51Z njn01 $
 !
 ! !USES:
 
@@ -1232,7 +1232,7 @@
       !***  compute evaporation from latent heat computed in shf forcing
 
       SFWF_COMP(:,:,iblock,sfwf_comp_evap) = &
-       SHF_COMP(:,:,iblock,shf_comp_qlat)/latent_heat_vapor
+       SHF_COMP(:,:,iblock,shf_comp_qlat)/latent_heat_vapor_mks
 
       !*** precipitation (kg/m^2/s)
 

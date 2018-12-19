@@ -8,7 +8,7 @@ module cfc11_mod
 ! !DESCRIPTION:
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: cfc11_mod.F90 21356 2010-03-01 22:12:38Z njn01 $
+!  SVN:$Id: cfc11_mod.F90 58852 2014-04-04 21:28:27Z mlevy@ucar.edu $
 
 ! !USES:
 
@@ -30,7 +30,7 @@ module cfc11_mod
        construct_io_field, rec_type_dbl, destroy_file,                &
        destroy_io_field, get_unit, release_unit
    use io_tools, only: document
-   use tavg, only: define_tavg_field, tavg_requested, accumulate_tavg_field
+   use tavg, only: define_tavg_field, accumulate_tavg_field
    use timers, only: get_timer
    use passive_tracer_tools, only: forcing_monthly_every_ts,          &
        init_forcing_monthly_every_ts, ind_name_pair, tracer_read,     &
@@ -442,7 +442,7 @@ contains
     !---------------------------------------------------------------------------
 
     allocate( LAND_MASK(nx_block,ny_block,max_blocks_clinic) )
-    LAND_MASK = merge(.true., .false., KMT > 0)
+    LAND_MASK = (KMT.gt.0)
 
     call get_timer(cfc11_sflux_timer, 'CFC11_SFLUX',1, &
                                           distrb_clinic%nprocs)
@@ -1216,42 +1216,13 @@ contains
 !untested   !$OMP PARALLEL DO PRIVATE(iblock)
 
    do iblock = 1,nblocks_clinic
-
-      if (tavg_requested(tavg_FICE)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,1,iblock)  &
-                                    ,tavg_FICE,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_XKW)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,2,iblock)  &
-                                    ,tavg_XKW,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_ATM_PRESS)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,3,iblock)  &
-                                    ,tavg_ATM_PRESS,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_pCFC11)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,4,iblock)  &
-                                    ,tavg_pCFC11,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_PV)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,5,iblock)  &
-                                    ,tavg_PV,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_SCHMIDT_CFC11)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,6,iblock)  &
-                                    ,tavg_SCHMIDT_CFC11,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_CFC11SAT)) then
-         call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,7,iblock)  &
-                                    ,tavg_CFC11SAT,iblock,1)
-      endif
-
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,1,iblock),tavg_FICE,iblock,1)
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,2,iblock),tavg_XKW,iblock,1)
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,3,iblock),tavg_ATM_PRESS,iblock,1)
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,4,iblock),tavg_pCFC11,iblock,1)
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,5,iblock),tavg_PV,iblock,1)
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,6,iblock),tavg_SCHMIDT_CFC11,iblock,1)
+      call accumulate_tavg_field(CFC11_SFLUX_TAVG(:,:,7,iblock),tavg_CFC11SAT,iblock,1)
    end do
 
 !untested   !$OMP END PARALLEL DO

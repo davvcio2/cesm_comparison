@@ -10,7 +10,7 @@
 !  diffusion of momentum and tracers.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: hmix_del4.F90 23164 2010-05-19 21:10:37Z njn01 $
+!  SVN:$Id: hmix_del4.F90 26603 2011-01-28 23:09:02Z njn01 $
 
 ! !USES:
 
@@ -1059,8 +1059,7 @@
       end do
 
       if (mix_pass /= 1) then
-         if (tavg_requested(tavg_HDIFE_TRACER(n))) then
-         if (ltavg_on(tavg_in_which_stream(tavg_HDIFE_TRACER(n)))) then
+         if (accumulate_tavg_now(tavg_HDIFE_TRACER(n))) then
             do j=this_block%jb,this_block%je
             do i=this_block%ib,this_block%ie
                WORK(i,j) = ah*CE(i,j)*(D2TK(i+1,j)-D2TK(i,j))
@@ -1068,17 +1067,14 @@
             enddo
             call accumulate_tavg_field(WORK,tavg_HDIFE_TRACER(n),bid,k)
          endif
-         endif
 
-         if (tavg_requested(tavg_HDIFN_TRACER(n))) then
-         if (ltavg_on(tavg_in_which_stream(tavg_HDIFN_TRACER(n)))) then
+         if (accumulate_tavg_now(tavg_HDIFN_TRACER(n))) then
             do j=this_block%jb,this_block%je
             do i=this_block%ib,this_block%ie
                WORK(i,j) = ah*CN(i,j)*(D2TK(i,j+1)-D2TK(i,j))
             enddo
             enddo
             call accumulate_tavg_field(WORK,tavg_HDIFN_TRACER(n),bid,k)
-         endif
          endif
       endif
 

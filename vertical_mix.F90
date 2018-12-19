@@ -18,7 +18,7 @@
 !  \end{itemize}
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: vertical_mix.F90 22881 2010-05-11 04:23:39Z njn01 $
+!  SVN:$Id: vertical_mix.F90 47279 2013-05-18 00:14:34Z mlevy@ucar.edu $
 
 ! !USES:
 
@@ -471,17 +471,15 @@
                             units='adj/s', grid_loc='3111')
    endif
 
-   if (implicit_vertical_mix) then
-     do n = 1,nt
-       call define_tavg_field(tavg_DIA_IMPVF_TRACER(n), 'DIA_IMPVF_'     /&
-                                       &/ trim(tracer_d(n)%short_name),3, &
-          long_name=trim(tracer_d(n)%short_name)                         /&
-    &/ ' Flux Across Bottom Face from Diabatic Implicit Vertical Mixing', &
-          units=trim(tracer_d(n)%flux_units), grid_loc='3113',            &
-          scale_factor=tracer_d(n)%scale_factor,                          &
-          coordinates='TLONG TLAT z_w_bot time')
-     enddo
-   endif
+   do n = 1,nt
+     call define_tavg_field(tavg_DIA_IMPVF_TRACER(n), 'DIA_IMPVF_'     /&
+                                     &/ trim(tracer_d(n)%short_name),3, &
+        long_name=trim(tracer_d(n)%short_name)                         /&
+  &/ ' Flux Across Bottom Face from Diabatic Implicit Vertical Mixing', &
+        units=trim(tracer_d(n)%flux_units), grid_loc='3113',            &
+        scale_factor=tracer_d(n)%scale_factor,                          &
+        coordinates='TLONG TLAT z_w_bot time')
+   enddo
 
 !-----------------------------------------------------------------------
 !EOC
@@ -495,7 +493,7 @@
 ! !IROUTINE: vmix_coeffs
 ! !INTERFACE:
 
- subroutine vmix_coeffs(k, TMIX, UMIX, VMIX, RHOMIX,             &
+ subroutine vmix_coeffs(k, TMIX, UMIX, VMIX, UCUR, VCUR, RHOMIX, &
                            STF, SHF_QSW,                         &
                            this_block,                           &
                            SMF, SMFT)
@@ -519,6 +517,9 @@
    real (r8), dimension(nx_block,ny_block,km), intent(in) :: &
       UMIX, VMIX,           &! U,V     at mix time level
       RHOMIX                 ! density at mix time level
+
+   real (r8), dimension(nx_block,ny_block,km), intent(in) :: &
+      UCUR, VCUR             ! U,V     at cur time level
 
    real (r8), dimension(nx_block,ny_block,nt), intent(in) :: &
       STF                    ! surface forcing for all tracers
@@ -597,7 +598,7 @@
          if (present(SMFT)) then
             call vmix_coeffs_kpp(VDC(:,:,:,:,bid),           &
                                  VVC(:,:,:,  bid),           &
-                                 TMIX,UMIX,VMIX,RHOMIX,      &
+                                 TMIX,UMIX,VMIX,UCUR,VCUR,RHOMIX, &
                                  STF,SHF_QSW,                &
                                  this_block,                 &
                                  convect_diff, convect_visc, &
@@ -605,14 +606,14 @@
          else
             call vmix_coeffs_kpp(VDC(:,:,:,:,bid),           &
                                  VVC(:,:,:,  bid),           &
-                                 TMIX,UMIX,VMIX,RHOMIX,      &
+                                 TMIX,UMIX,VMIX,UCUR,VCUR,RHOMIX, &
                                  STF,SHF_QSW,                &
                                  this_block,                 &
                                  convect_diff, convect_visc, &
                                  SMF=SMF)
          endif
 
-         if (tavg_requested(tavg_VDC_T) .and. mix_pass /= 1) then
+         if (accumulate_tavg_now(tavg_VDC_T) ) then
             do kk=1,km
               ! kk index is no longer shifted because z_w_bot is now an output coordinate
               ! VDC is at cell bottom
@@ -620,7 +621,7 @@
             end do
          endif
 
-         if (tavg_requested(tavg_VDC_S) .and. mix_pass /= 1) then
+         if (accumulate_tavg_now(tavg_VDC_S) ) then
             do kk=1,km
               ! kk index is no longer shifted because z_w_bot is now an output coordinate
               ! VDC is at cell bottom
@@ -628,7 +629,7 @@
             end do
          endif
 
-         if (tavg_requested(tavg_VVC) .and. mix_pass /= 1) then
+         if (accumulate_tavg_now(tavg_VVC) ) then
             do kk=1,km
               ! kk index is no longer shifted because z_w_bot is now an output coordinate
               ! VVC is at cell bottom
@@ -988,13 +989,8 @@
 !
 !-----------------------------------------------------------------------
 
-   if (tavg_requested(tavg_VUF) .and. mix_pass /= 1) then
-      call accumulate_tavg_field(VUF(:,:,bid),tavg_VUF,bid,k)
-   endif
-
-   if (tavg_requested(tavg_VVF) .and. mix_pass /= 1) then
-      call accumulate_tavg_field(VVF(:,:,bid),tavg_VVF,bid,k)
-   endif
+   call accumulate_tavg_field(VUF(:,:,bid),tavg_VUF,bid,k)
+   call accumulate_tavg_field(VVF(:,:,bid),tavg_VVF,bid,k)
 
 !-----------------------------------------------------------------------
 !EOC
@@ -1122,7 +1118,6 @@
       do k=2,km
 
        if (partial_bottom_cells) then
-!CDIR COLLAPSE
         do j=jb,je
         do i=ib,ie
            C(i,j) = A(i,j)
@@ -1130,39 +1125,54 @@
                     (p5*(DZT(i,j,k  ,bid) + &
                          DZT(i,j,k+1,bid)))
            hfac_t(k) = DZT(i,j,k,bid)/c2dtt(k)
+
+           ! Note: this code is duplicated below for the case where
+           !       partial_bottom_cells is .false.
+           if (k > KMT(i,j,bid)) then
+              F(i,j,k) = c0
+           else
+              if (k == KMT(i,j,bid)) then
+                 D(i,j) = hfac_t(k)+B(i,j)
+              else
+                 D(i,j) = hfac_t(k)+A(i,j)+B(i,j)
+              endif
+
+              E(i,j,k) = A(i,j)/D(i,j)
+              B(i,j) = (hfac_t(k) + B(i,j))*E(i,j,k)
+   
+              F(i,j,k) = (hfac_t(k)*TNEW(i,j,k,n) + &
+                          C(i,j)*F(i,j,k-1))/D(i,j)
+           endif
+
         end do
         end do
-       else
-!CDIR COLLAPSE
+       else ! no partial_bottom_cells
         do j=jb,je
         do i=ib,ie
            C(i,j) = A(i,j)
            A(i,j) = afac_t(k)*VDC(i,j,k,mt2,bid)
+
+           ! Note: this code is duplicated above for the case where
+           !       partial_bottom_cells is .true.
+           if (k > KMT(i,j,bid)) then
+              F(i,j,k) = c0
+           else
+              if (k == KMT(i,j,bid)) then
+                 D(i,j) = hfac_t(k)+B(i,j)
+              else
+                 D(i,j) = hfac_t(k)+A(i,j)+B(i,j)
+              endif
+
+              E(i,j,k) = A(i,j)/D(i,j)
+              B(i,j) = (hfac_t(k) + B(i,j))*E(i,j,k)
+   
+              F(i,j,k) = (hfac_t(k)*TNEW(i,j,k,n) + &
+                          C(i,j)*F(i,j,k-1))/D(i,j)
+           endif
+
         end do
         end do
        endif ! partial_bottom_cells
-
-!CDIR COLLAPSE
-       do j=jb,je
-       do i=ib,ie
-            if (k > KMT(i,j,bid)) then
-               F(i,j,k) = c0
-            else
-               if (k == KMT(i,j,bid)) then
-                  D(i,j) = hfac_t(k)+B(i,j)
-               else
-                  D(i,j) = hfac_t(k)+A(i,j)+B(i,j)
-               endif
-
-               E(i,j,k) = A(i,j)/D(i,j)
-               B(i,j) = (hfac_t(k) + B(i,j))*E(i,j,k)
-   
-               F(i,j,k) = (hfac_t(k)*TNEW(i,j,k,n) + &
-                           C(i,j)*F(i,j,k-1))/D(i,j)
-            endif
-
-       end do ! i
-       end do ! j
       end do  ! k
 
 
@@ -1242,7 +1252,7 @@
 
    do n = 1,nt
       mt2 = min(n,size(VDC,DIM=4))
-      if (tavg_requested(tavg_DIA_IMPVF_TRACER(n))) then
+      if (accumulate_tavg_now(tavg_DIA_IMPVF_TRACER(n))) then
          do k=1,km-1
             if (allocated(VDC_GM)) then
                WORK1 = VDC(:,:,k,mt2,bid) - VDC_GM(:,:,k,bid)
@@ -1398,45 +1408,58 @@
       do k=2,km
 
         if (partial_bottom_cells) then
-!CDIR COLLAPSE
           do j=jb,je
           do i=ib,ie
              C(i,j) = A(i,j)
              A(i,j) = aidif*VDC(i,j,k,mt2,bid)/ &
                       (p5*(DZT(i,j,k  ,bid) + DZT(i,j,k+1,bid)))
              hfac_t(k) = DZT(i,j,k,bid)/c2dtt(k)
+
+             ! Note: this code is duplicated below for the case where
+             !       partial_bottom_cells is .false.
+             if (k > KMT(i,j,bid)) then
+                F(i,j,k) = c0
+             else
+                if (k == KMT(i,j,bid)) then
+                   D(i,j) = hfac_t(k)+B(i,j)
+                else
+                   D(i,j) = hfac_t(k)+A(i,j)+B(i,j)
+                endif
+
+                E(i,j,k) = A(i,j)/D(i,j)
+                B(i,j) = (hfac_t(k) + B(i,j))*E(i,j,k)
+
+                F(i,j,k) = C(i,j)*F(i,j,k-1)/D(i,j)
+             endif
+
           end do
           end do
-        else
-!CDIR COLLAPSE
+        else ! no partial_bottom_cells
           do j=jb,je
           do i=ib,ie
              C(i,j) = A(i,j)
              A(i,j) = afac_t(k)*VDC(i,j,k,mt2,bid)
+
+             ! Note: this code is duplicated above for the case where
+             !       partial_bottom_cells is .true.
+             if (k > KMT(i,j,bid)) then
+                F(i,j,k) = c0
+             else
+                if (k == KMT(i,j,bid)) then
+                   D(i,j) = hfac_t(k)+B(i,j)
+                else
+                   D(i,j) = hfac_t(k)+A(i,j)+B(i,j)
+                endif
+
+                E(i,j,k) = A(i,j)/D(i,j)
+                B(i,j) = (hfac_t(k) + B(i,j))*E(i,j,k)
+
+                F(i,j,k) = C(i,j)*F(i,j,k-1)/D(i,j)
+             endif
+
           end do
           end do
         endif ! partial_bottom_cells
-
-!CDIR COLLAPSE
-          do j=jb,je
-          do i=ib,ie
-            if (k > KMT(i,j,bid)) then
-               F(i,j,k) = c0
-            else
-               if (k == KMT(i,j,bid)) then
-                  D(i,j) = hfac_t(k)+B(i,j)
-               else
-                  D(i,j) = hfac_t(k)+A(i,j)+B(i,j)
-               endif
-
-               E(i,j,k) = A(i,j)/D(i,j)
-               B(i,j) = (hfac_t(k) + B(i,j))*E(i,j,k)
-
-               F(i,j,k) = C(i,j)*F(i,j,k-1)/D(i,j)
-            endif
-
-         end do
-         end do
       end do ! k
 
       !*** back substitution
@@ -1592,47 +1615,68 @@
            hfac_u(k) = DZU(i,j,k,bid)/c2dtu
            A(i,j) = aidif*VVC(i,j,k,bid)/(p5*(DZU(i,j,k,bid) + &
                                               DZU(i,j,k+1,bid)))
+
+           ! Note: this code is duplicated below for the case where
+           !       partial_bottom_cells is .false.
+           if (k < KMU(i,j,bid)) then
+
+              D(i,j)    = hfac_u(k) + A(i,j) + B(i,j)
+              E(i,j,k)  = A(i,j)/D(i,j)
+              B(i,j)    = (hfac_u(k) + B(i,j))*E(i,j,k)
+              F1(i,j,k) = (hfac_u(k)*UNEW(i,j,k) + &
+                           C(i,j)*F1(i,j,k-1))/D(i,j)
+              F2(i,j,k) = (hfac_u(k)*VNEW(i,j,k) + &
+                           C(i,j)*F2(i,j,k-1))/D(i,j)
+
+           else if (k == KMU(i,j,bid)) then
+
+              D(i,j)    = hfac_u(k) + B(i,j)
+              E(i,j,k)  = A(i,j)/D(i,j)
+              B(i,j)    = (hfac_u(k) + B(i,j))*E(i,j,k)
+              F1(i,j,k) = (hfac_u(k)*UNEW(i,j,k) + &
+                           C(i,j)*F1(i,j,k-1))/D(i,j)
+              F2(i,j,k) = (hfac_u(k)*VNEW(i,j,k) + &
+                           C(i,j)*F2(i,j,k-1))/D(i,j)
+           else
+              F1(i,j,k) = c0
+              F2(i,j,k) = c0
+         endif
         end do
         end do
-      else
-!CDIR COLLAPSE
+      else ! no partial_bottom_cell
         do j=jb,je
         do i=ib,ie
            C(i,j) = A(i,j)
            A(i,j) = afac_u(k)*VVC(i,j,k,bid)
+
+           ! Note: this code is duplicated above for the case where
+           !       partial_bottom_cells is .true.
+           if (k < KMU(i,j,bid)) then
+
+              D(i,j)    = hfac_u(k) + A(i,j) + B(i,j)
+              E(i,j,k)  = A(i,j)/D(i,j)
+              B(i,j)    = (hfac_u(k) + B(i,j))*E(i,j,k)
+              F1(i,j,k) = (hfac_u(k)*UNEW(i,j,k) + &
+                           C(i,j)*F1(i,j,k-1))/D(i,j)
+              F2(i,j,k) = (hfac_u(k)*VNEW(i,j,k) + &
+                           C(i,j)*F2(i,j,k-1))/D(i,j)
+
+           else if (k == KMU(i,j,bid)) then
+
+              D(i,j)    = hfac_u(k) + B(i,j)
+              E(i,j,k)  = A(i,j)/D(i,j)
+              B(i,j)    = (hfac_u(k) + B(i,j))*E(i,j,k)
+              F1(i,j,k) = (hfac_u(k)*UNEW(i,j,k) + &
+                           C(i,j)*F1(i,j,k-1))/D(i,j)
+              F2(i,j,k) = (hfac_u(k)*VNEW(i,j,k) + &
+                           C(i,j)*F2(i,j,k-1))/D(i,j)
+           else
+              F1(i,j,k) = c0
+              F2(i,j,k) = c0
+         endif
         end do
         end do
       endif ! partial_bottom_cells
-
-!CDIR COLLAPSE
-      do j=jb,je
-      do i=ib,ie
-         if (k < KMU(i,j,bid)) then
-
-            D(i,j)    = hfac_u(k) + A(i,j) + B(i,j)
-            E(i,j,k)  = A(i,j)/D(i,j)
-            B(i,j)    = (hfac_u(k) + B(i,j))*E(i,j,k)
-            F1(i,j,k) = (hfac_u(k)*UNEW(i,j,k) + &
-                         C(i,j)*F1(i,j,k-1))/D(i,j)
-            F2(i,j,k) = (hfac_u(k)*VNEW(i,j,k) + &
-                         C(i,j)*F2(i,j,k-1))/D(i,j)
-
-         else if (k == KMU(i,j,bid)) then
-
-            D(i,j)    = hfac_u(k) + B(i,j)
-            E(i,j,k)  = A(i,j)/D(i,j)
-            B(i,j)    = (hfac_u(k) + B(i,j))*E(i,j,k)
-            F1(i,j,k) = (hfac_u(k)*UNEW(i,j,k) + &
-                         C(i,j)*F1(i,j,k-1))/D(i,j)
-            F2(i,j,k) = (hfac_u(k)*VNEW(i,j,k) + &
-                         C(i,j)*F2(i,j,k-1))/D(i,j)
-         else
-            F1(i,j,k) = c0
-            F2(i,j,k) = c0
-         endif
-
-      end do
-      end do
    end do ! k
 
    do k=km-1,1,-1
@@ -1780,23 +1824,23 @@
 !
 !-----------------------------------------------------------------------
 
-   lpec  = tavg_requested(tavg_PEC)
-   lncnv = tavg_requested(tavg_NCNV)
+   lpec  = accumulate_tavg_now(tavg_PEC)
+   lncnv = accumulate_tavg_now(tavg_NCNV)
 
    do k = 1,km
-      if ((lpec .or. lncnv) .and. mix_pass /= 1) then
+      if (lpec .or. lncnv) then
          WORK1 = RHONEW(:,:,k)
       endif
 
       call state(k,k,TNEW(:,:,k,1), TNEW(:,:,k,2),  &
                      this_block, RHOOUT=RHONEW(:,:,k))
 
-      if (lpec .and. mix_pass /= 1) then
+      if (lpec) then
          WORK2 = RHONEW(:,:,k) - WORK1
          call accumulate_tavg_field(WORK2,tavg_PEC,bid,k)
       endif
 
-      if (lncnv .and. mix_pass /=1) then
+      if (lncnv) then
          if (.not. lpec) WORK2 = RHONEW(:,:,k) - WORK1
 
          where (abs(WORK2) > 1.e-8_r8)

@@ -9,7 +9,7 @@
 !  heat flux.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: forcing_shf.F90 14725 2009-03-04 22:50:06Z njn01 $
+!  SVN:$Id: forcing_shf.F90 24379 2010-08-13 19:54:51Z njn01 $
 !
 ! !USES:
 
@@ -486,17 +486,6 @@
    
    else
       no_region_mask = .true.
-      !jj/tcx   MASK_SR is not handled properly in rest of code
-      !jj/tcx   set this to 1 on all active cells to overcome problem
-      allocate( MASK_SR(nx_block,ny_block,max_blocks_clinic))
-      !$OMP PARALLEL DO PRIVATE(iblock)
-      do iblock=1,nblocks_clinic
-         MASK_SR(:,:,iblock) = 0
-         where (KMT(:,:,iblock) > 0)
-             MASK_SR(:,:,iblock) = 1
-         endwhere
-      end do
-      !$OMP END PARALLEL DO
    endif
   
 !-----------------------------------------------------------------------
@@ -2176,7 +2165,7 @@
    TAU = rho_air * USTARR**2
    TAU = TAU  * US / SH
    HS  = cp_air* TAU * TSTARR / USTARR
-   HL  = latent_heat_vapor * TAU * QSTARR / USTARR
+   HL  = latent_heat_vapor_mks * TAU * QSTARR / USTARR
 
 !-----------------------------------------------------------------------
 !EOC

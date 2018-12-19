@@ -12,7 +12,7 @@
 !  update routines for those fields.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: forcing.F90 18388 2009-09-18 19:11:25Z njn01 $
+!  SVN:$Id: forcing.F90 57726 2014-02-28 18:38:30Z mlevy@ucar.edu $
 !
 ! !USES:
 
@@ -73,7 +73,8 @@
       tavg_TAUY2,        &! tavg_id for wind stress**2 in Y direction
       tavg_FW,           &! tavg_id for freshwater flux
       tavg_TFW_T,        &! tavg_id for T flux due to freshwater flux
-      tavg_TFW_S          ! tavg_id for S flux due to freshwater flux
+      tavg_TFW_S,        &! tavg_id for S flux due to freshwater flux
+      tavg_U10_SQR        ! tavg_id for U10_SQR 10m wind speed squared from cpl
 
 !-----------------------------------------------------------------------
 !
@@ -214,6 +215,11 @@
                           units='kg/m^2/s', grid_loc='2110',         &
                           coordinates='TLONG TLAT time')
 
+   call define_tavg_field(tavg_U10_SQR,'U10_SQR',2,                  &
+                          long_name='10m wind speed squared',      &
+                          units='cm^2/^s', grid_loc='2110',        &
+                          coordinates='TLONG TLAT time')
+
 !-----------------------------------------------------------------------
 !
 !  define movie diagnostic fields
@@ -264,6 +270,7 @@
 !
 ! !REVISION HISTORY:
 !  same as module
+
 
 !EOP
 !BOC
@@ -370,7 +377,11 @@
            .not. lfw_as_salt_flx .and. liceform ) then
         FW = FW + FW_FREEZE
 
-        call tfreez(TFRZ,TRACER(:,:,1,2,curtime,:))
+         !$OMP PARALLEL DO PRIVATE(iblock)
+         do iblock = 1, nblocks_clinic
+            call tfreez(TFRZ(:,:,iblock), TRACER(:,:,1,2,curtime,iblock))
+         enddo
+         !$OMP END PARALLEL DO
 
         TFW(:,:,1,:) = TFW(:,:,1,:) + FW_FREEZE(:,:,:)*TFRZ(:,:,:)
         TFW(:,:,2,:) = TFW(:,:,2,:) + FW_FREEZE(:,:,:)*salice
@@ -378,7 +389,6 @@
 
 
    call set_ap(ATM_PRESS)
-
 
    if (nt > 2)  &
       call set_sflux_passive_tracers(U10_SQR,IFRAC,ATM_PRESS,STF)
@@ -440,7 +450,7 @@
 
       this_block = get_block(blocks_clinic(iblock),iblock)
 
-      if (tavg_requested(tavg_SHF)) then
+      if (accumulate_tavg_now(tavg_SHF)) then
          where (KMT(:,:,iblock) > 0)
             WORK = (STF(:,:,1,iblock)+SHF_QSW(:,:,iblock))/ &
                    hflux_factor ! W/m^2
@@ -451,7 +461,7 @@
          call accumulate_tavg_field(WORK,tavg_SHF,iblock,1)
       endif
 
-      if (tavg_requested(tavg_SHF_QSW)) then
+      if (accumulate_tavg_now(tavg_SHF_QSW)) then
          where (KMT(:,:,iblock) > 0)
             WORK = SHF_QSW(:,:,iblock)/hflux_factor ! W/m^2
          elsewhere
@@ -461,7 +471,7 @@
          call accumulate_tavg_field(WORK,tavg_SHF_QSW,iblock,1)
       endif
 
-      if (tavg_requested(tavg_SFWF)) then
+      if (accumulate_tavg_now(tavg_SFWF)) then
          if (sfc_layer_type == sfc_layer_varthick .and. &
              .not. lfw_as_salt_flx) then
             where (KMT(:,:,iblock) > 0)
@@ -480,7 +490,7 @@
          call accumulate_tavg_field(WORK,tavg_SFWF,iblock,1)
       endif
 
-      if (tavg_requested(tavg_SFWF_WRST)) then
+      if (accumulate_tavg_now(tavg_SFWF_WRST)) then
          if ( sfwf_formulation == 'partially-coupled' ) then
             where (KMT(:,:,iblock) > 0) ! convert to kg(freshwater)/m^2/s
                WORK = SFWF_COMP(:,:,iblock,sfwf_comp_wrest)/salinity_factor
@@ -493,41 +503,14 @@
          call accumulate_tavg_field(WORK,tavg_SFWF_WRST,iblock,1)
       endif
 
-      if (tavg_requested(tavg_TAUX)) then
-         call accumulate_tavg_field(SMF(:,:,1,iblock), &
-                                    tavg_TAUX,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_TAUX2)) then
-         call accumulate_tavg_field(SMF(:,:,1,iblock)**2, &
-                                    tavg_TAUX2,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_TAUY)) then
-         call accumulate_tavg_field(SMF(:,:,2,iblock), &
-                                    tavg_TAUY,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_TAUY2)) then
-         call accumulate_tavg_field(SMF(:,:,2,iblock)**2, &
-                                    tavg_TAUY2,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_FW)) then
-         call accumulate_tavg_field(FW(:,:,iblock), &
-                                    tavg_FW,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_TFW_T)) then
-         call accumulate_tavg_field(TFW(:,:,1,iblock)/hflux_factor, &
-                                    tavg_TFW_T,iblock,1)
-      endif
-
-      if (tavg_requested(tavg_TFW_S)) then
-         call accumulate_tavg_field(TFW(:,:,2,iblock)*rho_sw*c10, &
-                                    tavg_TFW_T,iblock,1)
-      endif
-
+      call accumulate_tavg_field(SMF(:,:,1,iblock), tavg_TAUX,iblock,1)
+      call accumulate_tavg_field(SMF(:,:,1,iblock)**2, tavg_TAUX2,iblock,1)
+      call accumulate_tavg_field(SMF(:,:,2,iblock), tavg_TAUY,iblock,1)
+      call accumulate_tavg_field(SMF(:,:,2,iblock)**2, tavg_TAUY2,iblock,1)
+      call accumulate_tavg_field(FW (:,:,iblock), tavg_FW,iblock,1)
+      call accumulate_tavg_field(TFW(:,:,1,iblock)/hflux_factor, tavg_TFW_T,iblock,1)
+      call accumulate_tavg_field(TFW(:,:,2,iblock)*rho_sw*c10, tavg_TFW_S,iblock,1)
+      call accumulate_tavg_field(U10_SQR(:,:,iblock), tavg_U10_SQR,iblock,1)
 
 
    end do

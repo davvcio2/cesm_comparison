@@ -10,7 +10,7 @@
 !  POP grid quantities.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: grid.F90 17212 2009-07-20 23:01:42Z njn01 $
+!  SVN:$Id: grid.F90 38648 2012-07-12 19:51:27Z mlevy@ucar.edu $
 
 ! !USES:
 
@@ -113,12 +113,15 @@
       HTN, HTE            ,&! cell widths on {N,E} sides of T cell
       HUS, HUW            ,&! cell widths on {S,W} sides of U cell
       ULAT, ULON          ,&! {latitude,longitude} of U points
-      TLAT, TLON          ,&! {latitude,longitude} of U points
+      TLAT, TLON          ,&! {latitude,longitude} of T points
       ANGLE, ANGLET       ,&! angle grid makes with latitude line
       FCOR, FCORT         ,&! coriolis parameter at U,T points
       UAREA, TAREA        ,&! area of U,T cells
       UAREA_R, TAREA_R    ,&! reciprocal of area of U,T cells
       HT, HU, HUR           ! ocean depth at T,U points
+
+   real (POP_r8), dimension(nx_block,ny_block,max_blocks_clinic), public :: &
+      TLATD, TLOND          ! {latitude,longitude} of T points in degrees
 
    !*** 3d depth fields for partial bottom cells
 
@@ -2960,6 +2963,15 @@
          'calc_tpoints: error updating tlon halo')
       return
    endif
+
+!-----------------------------------------------------------------------
+!
+!  Compute and store TLON and TLAT in degrees
+!
+!-----------------------------------------------------------------------
+
+   TLATD(:,:,:) = TLAT(:,:,:)*radian
+   TLOND(:,:,:) = TLON(:,:,:)*radian
 
 !-----------------------------------------------------------------------
 

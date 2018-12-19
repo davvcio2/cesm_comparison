@@ -10,7 +10,7 @@
 !  POP module.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: initial.F90 23533 2010-06-03 23:16:27Z njn01 $
+!  SVN:$Id: initial.F90 44694 2013-03-12 19:58:14Z mlevy@ucar.edu $
 !
 ! !USES:
 
@@ -18,6 +18,7 @@
    use POP_ErrorMod
    use POP_IOUnitsMod
    use POP_SolversMod
+   use POP_ReductionsMod
 
    use kinds_mod, only: i4, i8, r8, int_kind, log_kind, char_len
    use blocks, only: block, nx_block, ny_block, get_block
@@ -26,7 +27,7 @@
        init_domain_distribution, distrb_clinic
    use constants, only: radian, delim_fmt, blank_fmt, field_loc_center, blank_fmt, &
        c0, ppt_to_salt, mpercm, c1, field_type_scalar, init_constants,     &
-       stefan_boltzmann, latent_heat_vapor, vonkar, emissivity, &
+       stefan_boltzmann, latent_heat_vapor_mks, vonkar, emissivity, &
        latent_heat_fusion, t0_kelvin, pi, ocn_ref_salinity,     &
        sea_ice_salinity, radius, cp_sw, grav, omega,cp_air,     &
        rho_fw, sound, rho_air, rho_sw, ndelim_fmt
@@ -48,10 +49,11 @@
    use horizontal_mix, only: init_horizontal_mix
    use advection, only: init_advection
    use diagnostics, only: init_diagnostics
-   use state_mod, only: init_state, state
+   use state_mod, only: init_state, state, state_itype, state_type_mwjf, state_range_iopt, &
+      state_range_enforce 
    use time_management, only: first_step, init_time1, init_time2, &
                               dttxcel, dtuxcel, check_time_flag_int,  &
-                              get_time_flag_id
+                              get_time_flag_id, freq_opt_nhour
    use topostress, only: init_topostress
    use ice
    use output, only: init_output
@@ -70,20 +72,21 @@
    use restart, only: read_restart, restart_fmt, read_restart_filename
    use ms_balance, only: init_ms_balance
    use forcing_coupled, only: pop_init_coupled, pop_init_partially_coupled, &
-       qsw_distrb_iopt, qsw_distrb_iopt_const
+       qsw_distrb_iopt, qsw_distrb_iopt_const, ncouple_per_day, coupled_freq_iopt
    use global_reductions, only: init_global_reductions, global_sum
    use timers, only: init_timers
    use registry
    use qflux_mod, only: init_qflux
+   use niw_mixing
    use tidal_mixing
    use step_mod, only: init_step
    use gather_scatter
-   use boundary_module
 #ifdef CCSMCOUPLED
    use shr_ncread_mod
    use shr_map_mod
 #endif
    use overflows
+   use overflow_type
 
    implicit none
    private
@@ -229,6 +232,7 @@
 !-----------------------------------------------------------------------
 
    call init_global_reductions
+   call POP_initReductions
 
 !-----------------------------------------------------------------------
 !
@@ -298,6 +302,14 @@
 
 !-----------------------------------------------------------------------
 !
+!  initialize niw driven mixing
+!
+!-----------------------------------------------------------------------
+   
+   call init_niw_mixing
+
+!-----------------------------------------------------------------------
+!
 !  initialize tidally driven mixing
 !
 !-----------------------------------------------------------------------
@@ -353,14 +365,6 @@
 !-----------------------------------------------------------------------
 
    call init_prognostic
-
-!-----------------------------------------------------------------------
-!
-!  initialize lateral boundary conditions module
-!
-!-----------------------------------------------------------------------
-
-   call init_lbc
 
 !-----------------------------------------------------------------------
 !
@@ -1609,7 +1613,7 @@
      write(stdout,1020) 'emissivity',emissivity, ' '
      write(stdout,1020) 'stefan_boltzmann', stefan_boltzmann,  &
                            'W/m^2/K^4'
-     write(stdout,1020) 'latent_heat_vapor',latent_heat_vapor,  &
+     write(stdout,1020) 'latent_heat_vapor_mks',latent_heat_vapor_mks,  &
                            'J/kg'
      write(stdout,1020) 'latent_heat_fusion',latent_heat_fusion, &
                            'erg/g'
@@ -1672,6 +1676,7 @@
       coupled_flag                ! flag for coupled_ts 
 
    logical (log_kind)        ::  &
+      test_condition,            &! logical test condition
       lref_val,                  &! are any tracers specifying a non-zero ref_val
       ISOP_test,                 &! temporary logical associated with ISOP
       ISOP_on                     ! are any ISOP tavg fields selected?
@@ -1793,7 +1798,7 @@
 
    if (check_all(ltidal_mixing .and. vmix_itype /= vmix_type_kpp)) then
      exit_string =   &
-     'FATAL ERROR::  Tidally driven mixing is only allowed when KPP mixing is enabled' 
+     'FATAL ERROR:  Tidally driven mixing is only allowed when KPP mixing is enabled' 
      call document ('POP_check', exit_string)
      number_of_fatal_errors = number_of_fatal_errors + 1
    endif
@@ -1806,7 +1811,7 @@
 
    if (check_all(ltidal_mixing .and. bckgrnd_vdc2 /= c0)) then
      exit_string =   &
-    'FATAL ERROR::  bckgrnd_vdc2 must be zero when tidal_mixing option is enabled'
+    'FATAL ERROR:  bckgrnd_vdc2 must be zero when tidal_mixing option is enabled'
      call document ('POP_check', exit_string)
      number_of_fatal_errors = number_of_fatal_errors + 1
    endif
@@ -1847,7 +1852,7 @@
 
    if (check_all(luse_cpl_ifrac .and. .not. allocated(OCN_WGT))) then
      exit_string =   &
-     'FATAL ERROR::  cannot set luse_cpl_ifrac .true. without allocating OCN_WGT'
+     'FATAL ERROR:  cannot set luse_cpl_ifrac .true. without allocating OCN_WGT'
      call document ('POP_check', exit_string)
      number_of_fatal_errors = number_of_fatal_errors + 1
    endif
@@ -1863,7 +1868,7 @@
      if ((.not. ecosys_qsw_distrb_const) .and. &
          (qsw_distrb_iopt == qsw_distrb_iopt_const)) then
        exit_string = &
-       'FATAL ERROR:: cannot set ecosys_qsw_distrb_const=.false. unless qsw_distrb_opt/=const'
+       'FATAL ERROR: cannot set ecosys_qsw_distrb_const=.false. unless qsw_distrb_opt/=const'
        call document ('POP_check', exit_string)
        number_of_fatal_errors = number_of_fatal_errors + 1
      endif
@@ -1876,23 +1881,12 @@
 !
 !-----------------------------------------------------------------------
 
-!jj let say it is only warninig 
-!jj we will see what will happen
-!jj maybe it is not danger (works in stand alone version)
-
    if (sfc_layer_type == sfc_layer_varthick .and. .not. lfw_as_salt_flx) then
-     exit_string = 'WARNING WARNING WARNING next is under testing'
-     call document ('POP_check', exit_string)
-     exit_string =  'FATAL ERROR::  untested/unsupported combination of options'
+     exit_string =  'FATAL ERROR:  untested/unsupported combination of options'
      exit_string =   trim(exit_string) /&
      &/' (sfc_layer_type == sfc_layer_varthick .and. .not. lfw_as_salt_flx)'
      call document ('POP_check', exit_string)
-     exit_string = 'WARNING WARNING WARNING next is under testing'
-     call document ('POP_check', exit_string)
-!jj =================commented out======================
-!jj     number_of_fatal_errors = number_of_fatal_errors + 1
-!jj ====================================================
-     number_of_fatal_errors = number_of_fatal_errors + 0
+     number_of_fatal_errors = number_of_fatal_errors + 1
    endif
 
 !-----------------------------------------------------------------------
@@ -1901,10 +1895,10 @@
 !
 !-----------------------------------------------------------------------
 
-  if (linertial) then
-     exit_string =  'FATAL ERROR::  inertial mixing option. '
+  if (.not. lniw_mixing .and. linertial) then
+     exit_string =  'FATAL ERROR:  inertial mixing option. '
      exit_string =   trim(exit_string) /&
-     &/' This option does not exactly restart and is untested. DO NOT USE!'
+     &/' This option is untested. DO NOT USE!'
      call document ('POP_check', exit_string)
      number_of_fatal_errors = number_of_fatal_errors + 1
    endif
@@ -1916,7 +1910,7 @@
 !-----------------------------------------------------------------------
 
   if (linertial .and. (.not. registry_match('diag_gm_bolus') .or. partial_bottom_cells)) then
-     exit_string =  'FATAL ERROR::  inertial mixing option inconsistency. '
+     exit_string =  'FATAL ERROR:  inertial mixing option inconsistency. '
      exit_string =   trim(exit_string) /&
      &/' diag_gm_bolus must be on and partial_bottom_cells must not be on'
      call document ('POP_check', exit_string)
@@ -1931,10 +1925,58 @@
 
    if ( overflows_on ) then
      if ( overflows_interactive .and. .not. registry_match('topography_opt_file') ) then
-        exit_string = 'FATAL ERROR:: interactive overflows without topography option = file'
+        exit_string = 'FATAL ERROR: interactive overflows without topography option = file'
         call document ('POP_check', exit_string)
         number_of_fatal_errors = number_of_fatal_errors + 1
      endif
+   endif
+
+!-----------------------------------------------------------------------
+!
+!  overflow check: if overflow active, must set state_range_iopt  = state_range_enforce
+!     and state_itype = state_type_mwjf for consistency
+!
+!-----------------------------------------------------------------------
+
+   if ( overflows_on ) then
+     if ( .not. (state_range_iopt == state_range_enforce .and. state_itype == state_type_mwjf) ) then
+        exit_string = 'FATAL ERROR: if overflows are active, must have state_range_opt = enforce '/&
+         &/' and state_choice = mwjf for consistency. You can uncomment this and procede at your own risk.'
+        call document ('POP_check', exit_string)
+        number_of_fatal_errors = number_of_fatal_errors + 1
+     endif
+   endif
+
+!-----------------------------------------------------------------------
+!
+!  near-inertial wave mixing without KPP mixing
+!
+!-----------------------------------------------------------------------
+
+   if (check_all(lniw_mixing .and. vmix_itype /= vmix_type_kpp)) then
+     exit_string =   &
+     'FATAL ERROR:  Near-inertial wave mixing is only allowed when KPP mixing is enabled' 
+     call document ('POP_check', exit_string)
+     number_of_fatal_errors = number_of_fatal_errors + 1
+   endif
+
+!-----------------------------------------------------------------------
+!
+!  near-inertial wave mixing and not 2-hour coupling
+!
+!-----------------------------------------------------------------------
+
+   test_condition = (coupled_freq_iopt == freq_opt_nhour .and. ncouple_per_day == 12)
+   if (check_all(lniw_mixing .and. .not. test_condition)  ) then
+     call document ('POP_check', 'coupled_freq_iopt                   ', coupled_freq_iopt )
+     call document ('POP_check', 'freq_opt_nhour                      ', freq_opt_nhour )
+     call document ('POP_check', 'ncouple_per_day                     ', ncouple_per_day )
+     call document ('POP_check', '(coupled_freq_iopt == freq_opt_nhour .and. ncouple_per_day == 2) ',  &
+                        (coupled_freq_iopt == freq_opt_nhour .and. ncouple_per_day == 2) )
+     exit_string =   &
+     'FATAL ERROR:  Near-inertial wave mixing is only allowed when coupling every two hours' 
+     call document ('POP_check', exit_string)
+     number_of_fatal_errors = number_of_fatal_errors + 1
    endif
 
 !-----------------------------------------------------------------------

@@ -9,7 +9,7 @@
 !  time-averages of selected fields and writing this data to files.
 !
 ! !REVISION HISTORY:
-!  CVS:$Id: movie.F90 21830 2010-03-19 23:24:01Z njn01 $
+!  CVS:$Id: movie.F90 41886 2012-11-13 16:56:30Z mlevy@ucar.edu $
 !  CVS:$Name:  $
 
 ! !USES:
@@ -59,11 +59,11 @@
       character(char_len)     :: long_name      ! long descriptive name
       character(char_len)     :: units          ! units
       character(4)            :: grid_loc       ! location in grid
-      real (r4)               :: missing_value  ! value on land pts
       real (r4), dimension(2) :: valid_range    ! min/max
-      integer (int_kind)            :: buf_loc        ! location in buffer
-      integer (int_kind)            :: field_loc      ! grid location and field
-      integer (int_kind)            :: field_type     ! type for io, ghost cells
+      real (r4)               :: fill_value     ! _FillValue
+      integer (int_kind)      :: buf_loc        ! location in buffer
+      integer (int_kind)      :: field_loc      ! grid location and field
+      integer (int_kind)      :: field_type     ! type for io, ghost cells
       integer (r4)            :: field_depth_index  ! depth index of 2d slice
    end type
 
@@ -412,7 +412,11 @@
 !
 !-----------------------------------------------------------------------
 
-      call date_and_time(date=date_created, time=time_created)
+      if (my_task.eq.master_task) then
+        call date_and_time(date=date_created, time=time_created)
+      end if
+      call broadcast_scalar(date_created, master_task)
+      call broadcast_scalar(time_created, master_task)
       hist_string = char_blank
       write(hist_string,'(a24,a8,1x,a10)') & 
          'POP MOVIE file created: ',date_created,time_created
@@ -476,9 +480,19 @@
                     grid_loc =avail_movie_fields(nfield)%grid_loc ,     &
                    field_loc =avail_movie_fields(nfield)%field_loc,     &
                   field_type =avail_movie_fields(nfield)%field_type,    &
-                missing_value=avail_movie_fields(nfield)%missing_value, &
                   valid_range=avail_movie_fields(nfield)%valid_range,   &
                    r2d_array =MOVIE_BUF_2D(:,:,:,loc) )
+
+!-----------------------------------------------------------------------
+!
+!    missing_value is a deprecated feature in CF1.4, and hence nco 4 versions,
+!    but it is added here because other software packages may require it
+!-----------------------------------------------------------------------
+
+           call add_attrib_io_field(movie_fields(nfield),'_FillValue',   &
+                                    avail_movie_fields(nfield)%fill_value )
+           call add_attrib_io_field(movie_fields(nfield),'missing_value',&
+                                    avail_movie_fields(nfield)%fill_value )
 
             call data_set (movie_file_desc, 'define', movie_fields(nfield))
          endif
@@ -691,7 +705,7 @@
 
  subroutine define_movie_field(id, short_name, depth_index,  &
                                   long_name, units, &
-                                  grid_loc, missing_value, valid_range, &
+                                  grid_loc,  valid_range, &
                                   field_loc, field_type)
 
 ! !DESCRIPTION:
@@ -723,9 +737,6 @@
 
    character(4), intent(in), optional :: &
       grid_loc                 ! location in grid (in 4-digit code)
-
-   real (r4), intent(in), optional :: &
-      missing_value            ! value on land pts
 
    real (r4), dimension(2), intent(in), optional :: &
       valid_range              ! min/max
@@ -852,11 +863,7 @@
       avail_movie_fields(id)%grid_loc = '    '
    endif
 
-   if (present(missing_value)) then
-      avail_movie_fields(id)%missing_value = missing_value
-   else
-      avail_movie_fields(id)%missing_value = undefined
-   endif
+   avail_movie_fields(id)%fill_value = undefined_nf_r4
 
    if (present(valid_range)) then
       avail_movie_fields(id)%valid_range = valid_range

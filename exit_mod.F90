@@ -11,7 +11,7 @@
 !  and flushm
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: exit_mod.F90 17759 2009-08-12 20:20:36Z njn01 $
+!  SVN:$Id: exit_mod.F90 35325 2012-03-09 00:48:12Z njn01 $
 
 ! !USES:
 
@@ -19,7 +19,6 @@
    use communicate
    use constants
    use POP_IOUnitsMod
-
 
    implicit none
    private
@@ -111,10 +110,11 @@
       write (local_unit,*) exit_message
       write (local_unit,blank_fmt)
       write (local_unit,delim_fmt)
-      call POP_IOUnitsFlush(local_unit)
 #ifndef CCSMCOUPLED
    endif
 #endif
+   call POP_IOUnitsFlush(local_unit)
+   call POP_IOUnitsFlush(6)
 
 !-----------------------------------------------------------------------
 !

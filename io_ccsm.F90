@@ -12,7 +12,7 @@
 !  to ccsm netCDF output files
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: io_ccsm.F90 9555 2008-04-17 19:30:26Z njn01 $
+!  SVN:$Id: io_ccsm.F90 27495 2011-03-25 21:46:00Z njn01 $
 !  
 ! 
 
@@ -57,9 +57,10 @@ contains
  subroutine data_set_nstd_ccsm (data_file,operation,field_id, &
                                 ndims,io_dims,nftype,         &
                                 short_name,long_name,units,   &
-                                coordinates,missing_value,    &
+                                time_dim,                     &
+                                coordinates,                  &
                                 fill_value,                   &
-                                implied_time_dim,             &
+                                method_string,                &
                                 data_1d_r8,                   &
                                 data_2d_r8,                   &
                                 data_2d_r4,                   &
@@ -87,7 +88,8 @@ contains
       long_name,                  &
       units,                      &
       coordinates,                &
-      nftype
+      nftype,                     &
+      method_string
 
    real (r4), dimension (:,:,:,:), intent(in) ::  &
       data_4d_r4
@@ -107,9 +109,8 @@ contains
       data_1d_ch
 
 
-   real (rtavg), intent(in)  ::  &
-      fill_value,             &
-      missing_value
+   real (r4), intent(in)  ::  &
+      fill_value
 
    type (datafile),intent(inout) ::  &
       data_file
@@ -120,18 +121,17 @@ contains
 
    type (io_dim), intent(inout)  ::  &
       io_dims(:)
-   
-   logical (log_kind), intent(inout) ::  &
-      implied_time_dim
+
+   type (io_dim), optional ::   &
+      time_dim         ! dimension descriptor for (unlimited) time dim
 
    optional ::            & 
-      implied_time_dim,   &
       short_name,         &
       long_name,          &
       units,              &
       coordinates,        &
-      missing_value,      &
       fill_value,         &
+      method_string,      &
       data_1d_r8,         &
       data_2d_r8,         &
       data_2d_r4,         &
@@ -148,10 +148,8 @@ contains
 !
 !-----------------------------------------------------------------------
 
-   integer (int_kind) :: num_writes  ! place-holder until more than one
-                                     ! time level written to a single file
-
    logical (log_kind) :: supported
+   logical (log_kind) :: lactive_time_dim
 
 !-----------------------------------------------------------------------
 !
@@ -162,6 +160,22 @@ contains
    if (data_file%data_format=='bin') then
          call exit_POP(sigAbort, &
              '(data_set_nstd_ccsm) ERROR: cannot call this routine with bin format')
+   endif
+
+!-----------------------------------------------------------------------
+!
+!  Deal with optional time dimension
+!
+!-----------------------------------------------------------------------
+
+   if (present (time_dim)) then
+     if (time_dim%active) then
+      lactive_time_dim = .true.
+     else
+      lactive_time_dim = .false.
+     endif
+   else
+      lactive_time_dim = .false.
    endif
 
 !-----------------------------------------------------------------------
@@ -180,11 +194,13 @@ contains
 
    case ('define')
 
-      call define_nstd_netcdf(data_file, ndims, io_dims, field_id,  &
+      !*** note: should test for presence of optional variables
+      call define_nstd_netcdf(data_file, ndims, io_dims,&
+                              field_id,                             &
                               short_name, long_name, units,         &
                               coordinates=coordinates,              &
-                              missing_value=missing_value,          &
                               fill_value=fill_value,                &
+                              method_string=method_string,          &
                               nftype=nftype                         )
 
 !-----------------------------------------------------------------------
@@ -195,12 +211,10 @@ contains
 
    case ('write')
 
-      num_writes =  1  ! for now, only support one time value per output file
-      
       call write_nstd_netcdf(                     &
-           data_file, field_id,num_writes,        &
+           data_file, field_id,                   &
            ndims, io_dims,nftype,                 &
-           implied_time_dim=implied_time_dim,     &
+           lactive_time_dim=lactive_time_dim,     &
            indata_1d_r8=data_1d_r8,               & ! pass all data arrays 
            indata_2d_r8=data_2d_r8,               & ! to write_nstd_netcdf
            indata_2d_r4=data_2d_r4,               &

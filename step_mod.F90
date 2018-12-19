@@ -9,7 +9,7 @@
 !  Contains the routine for stepping the model forward one timestep
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: step_mod.F90 17957 2009-08-24 21:41:50Z njn01 $
+!  SVN:$Id: step_mod.F90 44198 2013-02-25 22:43:22Z mlevy@ucar.edu $
 !
 ! !USES:
 
@@ -43,7 +43,7 @@
    use io_types
    use budget_diagnostics
    use overflows
-   use boundary_module
+   use overflow_type
 
    implicit none
    private
@@ -104,8 +104,7 @@
       errorCode
 
    integer (POP_i4) :: &
-!jj added "ii"
-      ii,i,j,k,n,        &! loop indices
+      i,j,k,n,           &! loop indices
       tmptime,           &! temp space for time index swapping
       iblock,            &! block counter
       ipass,             &! pass counter
@@ -178,6 +177,10 @@
 !-----------------------------------------------------------------------
 
    call time_manager(registry_match('lcoupled'), liceform)
+
+   call passive_tracers_send_time
+
+
 
 !-----------------------------------------------------------------------
 !
@@ -284,7 +287,6 @@
       if(profile_barrier) call POP_Barrier
       call timer_start(timer_baroclinic)
       call baroclinic_driver(ZX,ZY,DH,DHU, errorCode)
-
       if(profile_barrier) call POP_Barrier
       call timer_stop(timer_baroclinic)
       if (errorCode /= POP_Success) then
@@ -292,17 +294,6 @@
             'step: error in baroclinic driver')
          return
       endif
-
-
-      !set negative salinity values to zero:
-      !jj 
-      do iblock = 1,nblocks_clinic
-          where (TRACER(:,:,:,2,newtime,iblock) <= 0._POP_r8)
-             TRACER(:,:,:,2,newtime,iblock) = 0._POP_r8
-          endwhere
-      enddo
-      !jj
-
 
 !-----------------------------------------------------------------------
 !
@@ -494,8 +485,6 @@
                endif
             enddo
             enddo
-!            if (orlanski_north) &
-!               call lbc_orlanski_north(k,'vector','vvel',iblock)
          enddo
 
 !-----------------------------------------------------------------------
@@ -719,7 +708,6 @@
      !$OMP PARALLEL DO PRIVATE(iblock)
      do iblock = 1,nblocks_clinic
         call ice_flx_to_coupler(TRACER(:,:,:,:,curtime,iblock),iblock)
-        if (tavg_requested(tavg_id('QFLUX')) ) &
         call accumulate_tavg_field(QFLUX(:,:,iblock), tavg_id('QFLUX'),  &
                                    iblock,1,const=tlast_ice)
                                    
@@ -731,32 +719,6 @@
      if (nt > 2) call passive_tracers_tavg_FvICE(cp_over_lhfusion, QICE)
    endif
    endif
-
-!mj ===================================================================
-!mj biogeny
-!mj ===================================================================
-
-          do iblock = 1,nblocks_clinic
-             do ii = 3,7
-               where (TRACER(:,:,:,ii,:,iblock) < c0)
-                 TRACER(:,:,:,ii,:,iblock) = 0.01_r8
-               endwhere
-             enddo
-          enddo
-
-!mj ===================================================================
-!mj fitoplankton i inne
-!mj ===================================================================
-
-          do iblock = 1,nblocks_clinic
-             do ii = 9,nt 
-               where (TRACER(:,:,:,ii,:,iblock) < c0)
-                 TRACER(:,:,:,ii,:,iblock) = 0.01_r8
-               endwhere
-             enddo
-          enddo
-
-!mj ===================================================================
 
    call diag_global_afterupdate
    call diag_print

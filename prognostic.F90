@@ -36,34 +36,9 @@
 
 ! !PUBLIC DATA MEMBERS:
 
-! PUBLIC DATA
-   logical(log_kind), public :: lbc
-! LOCAL VARIABLES
-! this is beta version, works only with orlanski_north and nmn west
-   logical(log_kind), public :: orlanski_north,orlanski_south, &
-                        orlanski_east,orlanski_west,orl_north_first_call, &
-                        nmn_north,nmn_south, nmn_east, nmn_west 
-   integer(int_kind),public :: lbc_option
-   integer(int_kind),dimension(nx_block,ny_block,max_blocks_clinic),target :: &
-!========= T & U points are on Arakawa B-grid
-                     orlanski_north_U_MASK, orlanski_north_T_MASK, &
-                     orlanski_south_U_MASK, orlanski_south_T_MASK, &
-                     orlanski_east_U_MASK, orlanski_east_T_MASK, &
-                     orlanski_west_U_MASK, orlanski_west_T_MASK, &
-                     nmn_MASK
    real (r8), dimension(nx_block,ny_block,km,nt,3,max_blocks_clinic), &
       target :: &
       TRACER     ! 3d tracer fields for all blocks at 3 time levels
-   real (r8), dimension(nx_block,ny_block,km,max_blocks_clinic), &
-      target :: ORL_RESTORING_MASK
-   real (r8), dimension(nx_block,ny_block,max_blocks_clinic), &
-      target :: VVEL_RESTORING_MASK, NMN_VEL_MASK
-   real (r8), dimension(nx_block,ny_block,max_blocks_clinic), &
-      target :: NMN_RESTORING_MASK ! 2D mask
-   real (r8), dimension(nx_block,ny_block,km,max_blocks_clinic,5), &
-      target :: ORL_AVE_SPEED_VVEL,ORL_AVE_SPEED_TEMP,ORL_AVE_SPEED_SALT
-   real (r8), dimension(nx_block,ny_block,max_blocks_clinic,5), &
-      target :: ORL_AVE_SPEED_SHGT,ORL_AVE_SPEED_VBTP
 
    type (tracer_field), dimension(nt) :: &
       tracer_d   ! descriptors for each tracer
@@ -138,7 +113,6 @@
       UBTROP  = c0
       VBTROP  = c0
       PGUESS  = c0
-      ORL_RESTORING_MASK = c0
 
       tracer_d(1)%short_name = 'TEMP'
       tracer_d(1)%long_name  = 'Potential temperature'

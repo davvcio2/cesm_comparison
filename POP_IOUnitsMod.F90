@@ -24,7 +24,7 @@
 ! !REFDOC:
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: POP_IOUnitsMod.F90 21322 2010-02-26 22:55:09Z njn01 $
+!  SVN:$Id: POP_IOUnitsMod.F90 29587 2011-08-03 22:59:39Z mvertens $
 !  2006-08-21: Phil Jones
 !     added wrapper for system flush routine
 !  2006-08-15: Phil Jones
@@ -74,6 +74,13 @@
 
    character (5), parameter, public :: &
       POP_blankFormat = "(' ')" 
+
+#ifdef CCSMCOUPLED
+      ! instance control
+      integer (POP_i4)  , public :: inst_index
+      character(len=16) , public :: inst_name
+      character(len=16) , public :: inst_suffix
+#endif
 
 !EOP
 !BOC

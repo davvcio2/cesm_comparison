@@ -11,7 +11,7 @@
 !  modules.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: output.F90 20992 2010-02-12 23:01:33Z njn01 $
+!  SVN:$Id: output.F90 46059 2013-04-16 22:02:01Z mlevy@ucar.edu $
 !
 ! !USES:
 
@@ -23,7 +23,8 @@
    use history, only: write_history, init_history
    use movie, only: write_movie, init_movie
    use overflows
-   use tavg, only: write_tavg, init_tavg
+   use overflow_type
+   use tavg, only: write_tavg, init_tavg, final_tavg
    use timers, only: get_timer, timer_start, timer_stop
 
    implicit none
@@ -33,7 +34,8 @@
 ! !PUBLIC MEMBER FUNCTIONS:
 
    public :: output_driver, &
-             init_output
+             init_output,   &
+             final_output
 
 
 !EOP
@@ -184,6 +186,37 @@
 !EOC
 
  end subroutine init_output
+
+!***********************************************************************
+!BOP
+! !IROUTINE: final_output
+! !INTERFACE:
+
+ subroutine final_output
+
+! !DESCRIPTION:
+!  Closes any files that are still open for output
+!
+! !REVISION HISTORY:
+!  same as module
+
+!EOP
+!BOC
+
+!-----------------------------------------------------------------------
+!
+!  Make sure tavg files are closed (note that history, movie, and restart
+!  files are always closed after writing... tavg files are the only ones
+!  that can be left open for multiple time steps)
+!
+!-----------------------------------------------------------------------
+
+   call final_tavg
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end subroutine final_output
 
 
 !***********************************************************************

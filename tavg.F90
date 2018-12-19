@@ -9,7 +9,7 @@
 !  time-averages of selected fields and writing this data to files.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: tavg.F90 23423 2010-05-28 16:23:16Z njn01 $
+!  SVN:$Id: tavg.F90 58852 2014-04-04 21:28:27Z mlevy@ucar.edu $
 !  
 
 ! !USES:
@@ -52,13 +52,14 @@
              define_tavg_field,      &
              tavg_increment_sum_qflux,&
              accumulate_tavg_field,  &
-             tavg_requested,         &
+             accumulate_tavg_now,    &
              set_in_tavg_contents,   &
              tavg_in_this_stream,    &
              tavg_in_which_stream,   &
              write_tavg,             &
              read_tavg,              &
-             tavg_set_flag
+             tavg_set_flag,          &
+             final_tavg
  
    !*** ccsm
    public :: tavg_id,                &
@@ -105,7 +106,6 @@
       character(char_len)     :: nftype         ! indicates data type 
       character(4)            :: grid_loc       ! location in grid
       real (rtavg)            :: fill_value     ! _FillValue
-      real (rtavg)            :: missing_value  ! value on land pts
       real (rtavg)            :: scale_factor   ! r4 scale factor
       real (r4), dimension(2) :: valid_range    ! min/max
       integer (i4)            :: ndims          ! num dims (2 or 3)
@@ -120,9 +120,9 @@
 !BOC
 
    integer (int_kind), parameter :: &
-      max_avail_tavg_fields = 1000   ! limit on available fields - can
-                                     !   be pushed as high as necessary & practical
-                                     !   (total of all fields in all streams)
+      max_avail_tavg_fields = 500+21*nt   ! limit on available fields - can
+                                          !   be pushed as high as necessary practical
+                                          !   (total of all fields in all streams)
 
    !*** ccsm
    type (tavg_field_desc_ccsm), dimension(max_avail_tavg_fields) :: &
@@ -271,7 +271,7 @@
       ldiag_bsf,                  &
       ldiag_gm_bolus,             &! logical for diag_gm_bolus
       lsubmeso,                   &! logical for submesoscale_mixing
-      implied_time_dim,           &
+      lactive_time_dim,           &
       ltavg_fmt_out_nc,           &! true if netCDF output format
       ltavg_streams_index_present  ! true if using new streams tavg_contents;
                                    ! false if using standard tavg_contents
@@ -296,8 +296,8 @@
       num_ccsm_time_invar          = 0, &
       num_ccsm_scalars             = 0
 
-   real (r4), dimension(:), allocatable, target :: &
-      ZT_150m_R4   ! single precision array
+   real (rtavg), dimension(:), allocatable, target :: &
+      ZT_150m_R   ! single/double precision array
  
    integer (int_kind) ::  &
       tavg_BSF,           &
@@ -1144,10 +1144,12 @@
    endif !tavg_num_requested_fields
 
   !*** document which streams are using tavg_method_qflux
-   do ns=1,nstreams
-      write(stdout,*) '(init_tavg)  tavg_streams(',ns,  &
-            ')%ltavg_qflux_method_on = ', tavg_streams(ns)%ltavg_qflux_method_on
-   enddo ! ns
+   if (my_task == master_task) then
+      do ns=1,nstreams
+         write(stdout,*) '(init_tavg)  tavg_streams(',ns,  &
+               ')%ltavg_qflux_method_on = ', tavg_streams(ns)%ltavg_qflux_method_on
+      enddo ! ns
+   endif
 
 
 !-----------------------------------------------------------------------
@@ -1157,6 +1159,7 @@
 !-----------------------------------------------------------------------
 
    !*** define dimensions for tavg output files
+   !    redefined below if ccsm
    i_dim     = construct_io_dim('i',nx_global)
    j_dim     = construct_io_dim('j',ny_global)
    k_dim     = construct_io_dim('k',km)
@@ -1206,8 +1209,8 @@
 
      !*** how many levels have their midpoint shallower than 150m
      zt_150m_levs = count(zt < 150.0e2_r8)
-     if (.not. allocated(ZT_150m_R4)) &
-       allocate(ZT_150m_R4(zt_150m_levs))
+     if (.not. allocated(ZT_150m_R)) &
+       allocate(ZT_150m_R(zt_150m_levs))
 
      !*** define dimensions for tavg output files
      i_dim      = construct_io_dim('nlon',nx_global)
@@ -1499,7 +1502,8 @@
       i,j,          &! indices
       nstd_field_id,&
       field_id,     &!temporary id 
-      field_counter
+      field_counter,&
+      method_integer
 
    character (char_len) ::  &
       string,               &! dummy character string
@@ -1509,7 +1513,8 @@
       tavg_pointer_file,    &! filename for pointer file containing
                              !   location/name of last restart file
       tavg_fmt_in,          &! format (nc or bin) for reading
-      ns_temp
+      ns_temp,              &
+      method_string          ! cell_methods string
 
    character (char_len),save ::  &
       cf_conventions ='CF-1.0; http://www.cgd.ucar.edu/cms/eaton/netcdf/CF-current.htm'
@@ -1817,7 +1822,11 @@
 !
 !-----------------------------------------------------------------------
 
-    call date_and_time(date=date_created, time=time_created)
+    if (my_task.eq.master_task) then
+      call date_and_time(date=date_created, time=time_created)
+    end if
+    call broadcast_scalar(date_created, master_task)
+    call broadcast_scalar(time_created, master_task)
     hist_string = char_blank
     write(hist_string,'(a23,a8,1x,a10)') & 
     'POP TAVG file created: ',date_created,time_created
@@ -1922,16 +1931,28 @@
         if ( (nn == tavg_MOC    .and. ltavg_moc_diags(ns)   ) .or.  &
              (nn == tavg_N_HEAT .and. ltavg_n_heat_trans(ns)) .or.  &
              (nn == tavg_N_SALT .and. ltavg_n_salt_trans(ns)))      then
-
+          
+          !*** get info on cell_methods
+          if (nn == tavg_MOC) then
+             method_integer = TAVG_BUF_3D_METHOD(tavg_loc_WVEL)
+             call tavg_get_cell_method_string (method_integer,method_string)
+          else if (nn == tavg_N_HEAT) then
+             method_integer = TAVG_BUF_2D_METHOD(tavg_loc_ADVT)
+             call tavg_get_cell_method_string (method_integer,method_string)
+          else if (nn == tavg_N_SALT) then
+             method_integer = TAVG_BUF_2D_METHOD(tavg_loc_ADVS)
+             call tavg_get_cell_method_string (method_integer,method_string)
+          endif
           call data_set_nstd_ccsm (                               &
               tavg_file_desc(ns), 'define', nstd_field_id,        &
               ndims_nstd_ccsm(nn), io_dims_nstd_ccsm(:,nn),       &
               short_name=avail_tavg_nstd_fields(nn)%short_name,   &
                long_name=avail_tavg_nstd_fields(nn)%long_name,    &
                    units=avail_tavg_nstd_fields(nn)%units,        &
+                time_dim=time_dim,                                &
              coordinates=avail_tavg_nstd_fields(nn)%coordinates,  &
-           missing_value=avail_tavg_nstd_fields(nn)%missing_value,&
-              fill_value=avail_tavg_nstd_fields(nn)%fill_value,   &
+              fill_value=undefined_nf_r4,                         & ! kludge for r4 MOC,etc
+              method_string=trim(method_string),                  &
                   nftype=avail_tavg_nstd_fields(nn)%nftype        )
 
           if (nn == tavg_MOC) then
@@ -2567,7 +2588,7 @@
 
                case(field_loc_center)
                   do k=1,km
-                     RMASK = merge(c1, c0, k <= KMT(:,:,iblock)) 
+                     RMASK(:,:) = merge(c1, c0, k <= KMT(:,:,iblock)) 
                      WORK(:,:,iblock) = WORK(:,:,iblock) + dz(k)* &
                                         TAVG_BUF_3D(:,:,k,iblock,ifield)* &
                                         TAREA(:,:,iblock)*RMASK
@@ -2575,7 +2596,7 @@
 
                case(field_loc_NEcorner)
                   do k=1,km
-                     RMASK = merge(c1, c0, k <= KMU(:,:,iblock)) 
+                     RMASK(:,:) = merge(c1, c0, k <= KMU(:,:,iblock)) 
                      WORK(:,:,iblock) = WORK(:,:,iblock) + dz(k)* &
                                         TAVG_BUF_3D(:,:,k,iblock,ifield)* &
                                         UAREA(:,:,iblock)*RMASK
@@ -2583,7 +2604,7 @@
 
                case default ! make U cell the default for all other cases
                   do k=1,km
-                     RMASK = merge(c1, c0, k <= KMU(:,:,iblock)) 
+                     RMASK(:,:) = merge(c1, c0, k <= KMU(:,:,iblock)) 
                      WORK(:,:,iblock) = WORK(:,:,iblock) + dz(k)* &
                                         TAVG_BUF_3D(:,:,k,iblock,ifield)* &
                                         UAREA(:,:,iblock)*RMASK
@@ -2867,6 +2888,15 @@
       ndims               ! rank of field (2=2d,3=3d)
 
 !-----------------------------------------------------------------------
+! 
+!  test: mix_pass, ltavg_on, and tavg_requested.                
+!                                                              
+!-----------------------------------------------------------------------
+                                                                
+   if (.not. accumulate_tavg_now(field_id)) return             
+                                                              
+
+!-----------------------------------------------------------------------
 !
 !  get buffer location and field info from avail_tavg_field array
 !
@@ -2938,6 +2968,67 @@
 !EOC
 
  end subroutine accumulate_tavg_field
+
+!***********************************************************************
+!BOP
+! !IROUTINE: accumulate_tavg_now
+! !INTERFACE:
+
+ function accumulate_tavg_now(field_id)
+
+! !DESCRIPTION:
+!  This function determines whether an available (defined) tavg field
+!  can be accumulated at this time.
+!
+!  If the following are true:
+!    1) mix_pass .ne. 1
+!    2) the field is requested
+!    3) tavg is on for the stream which contains the field
+!  then accumulate_tavg_now is true 
+!
+! !REVISION HISTORY:
+!  Nancy J. Norton 7 April 2010
+
+! !INPUT PARAMETERS:
+
+   integer (int_kind), intent(in) :: &
+      field_id            
+                         
+
+! !OUTPUT PARAMETERS:
+
+   logical (log_kind) :: &
+      accumulate_tavg_now 
+                         
+
+!EOP
+!BOC
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+
+   integer (int_kind) :: &
+      tavg_stream_num            
+
+
+   accumulate_tavg_now   = .false.
+
+   if (mix_pass /= 1) then
+         
+     if (tavg_requested(field_id)) then
+       tavg_stream_num  = tavg_in_which_stream(field_id)
+       accumulate_tavg_now = ltavg_on(tavg_stream_num)
+     endif
+
+   endif
+
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end function accumulate_tavg_now
 
 !***********************************************************************
 !BOP
@@ -3355,24 +3446,23 @@
    endif
 
 
+!  kludge for  MOC and transport diagnostics -- always r4
+   if (.not. nonstandard_fields) then
    if (present(scale_factor)) then
       if (scale_factor /= 1.0_rtavg) then
         tavg_field%scale_factor = scale_factor
         if (scale_factor /= 0.0_rtavg) then
           tavg_field%fill_value    = undefined_nf/scale_factor
-          tavg_field%missing_value = undefined_nf/scale_factor
         endif
       else
         tavg_field%scale_factor  = undefined_nf
         tavg_field%fill_value    = undefined_nf
-        tavg_field%missing_value = undefined_nf
       endif
    else
       tavg_field%scale_factor  = undefined_nf
       tavg_field%fill_value    = undefined_nf
-      tavg_field%missing_value = undefined_nf
    endif
-
+   endif
 
    if (present(valid_range)) then
       tavg_field%valid_range = valid_range
@@ -3433,8 +3523,7 @@
      call document ('define_tavg_field',  trim(tavg_field%long_name))
      call document ('define_tavg_field',  trim(tavg_field%units))
      call document ('define_tavg_field',  trim(tavg_field%grid_loc))
-     call document ('define_tavg_field', 'fill_value',   tavg_field%fill_value)
-     call document ('define_tavg_field', 'missing_value',tavg_field%missing_value)
+     call document ('define_tavg_field', '_FillValue',   tavg_field%fill_value)
      call document ('define_tavg_field', 'scale_factor', tavg_field%scale_factor)
      call document ('define_tavg_field',  trim(tavg_field%coordinates))
      call document ('define_tavg_field', 'field_type',   tavg_field%field_type)
@@ -4339,7 +4428,7 @@
  call add_attrib_file(tavg_file_desc, 'contents', 'Diagnostic and Prognostic Variables')
  call add_attrib_file(tavg_file_desc, 'source', 'CCSM POP2, the CCSM Ocean Component')
  call add_attrib_file(tavg_file_desc, 'revision', &
-   '$Id: tavg.F90 23423 2010-05-28 16:23:16Z njn01 $')
+   '$Id: tavg.F90 58852 2014-04-04 21:28:27Z mlevy@ucar.edu $')
 
  if (allow_leapyear) then
     write(calendar,'(a,i5,a,i5,a)') &
@@ -4351,7 +4440,11 @@
  call add_attrib_file(tavg_file_desc, 'calendar', trim(calendar))
 
  
- call date_and_time (date=current_date,time=current_time)
+ if (my_task.eq.master_task) then
+   call date_and_time(date=current_date, time=current_time)
+ end if
+ call broadcast_scalar(current_date, master_task)
+ call broadcast_scalar(current_time, master_task)
  start_time = char_blank
  write(start_time,1000) current_date(1:4), current_date(5:6),  &
                         current_date(7:8), current_time(1:2),  &
@@ -4399,51 +4492,86 @@
  
 !EOP
 !BOC
+
 !-----------------------------------------------------------------------
 !
 !  local variables
 !
 !-----------------------------------------------------------------------
- 
- character (char_len) ::   &
-    string
 
-   string = char_blank
+ integer (i4)         ::  &
+    method_integer
+ character (char_len) ::  &
+    method_string
 
-   select case (avail_tavg_fields(nfield)%method)
-
-     case(tavg_method_avg)
-        string='time: mean'
-
-     case(tavg_method_min)
-        string='time: minimum'
-
-     case(tavg_method_max)
-        string='time: maximum'
-
-     case(tavg_method_qflux)
-        string='time: mean'
-
-     case default
-        write(exit_string,'(a,1x,i4)') 'FATAL ERROR:  unknown method = ', avail_tavg_fields(nfield)%method
-        call document ('tavg_add_attrib_io_field_ccsm', exit_string)
-        call exit_POP (sigAbort,exit_string,out_unit=stdout)
-
-   end select
-
-   call add_attrib_io_field(tavg_field, 'cell_methods', trim(string))
+   method_integer = avail_tavg_fields(nfield)%method
+   call tavg_get_cell_method_string (method_integer,method_string)
+   call add_attrib_io_field(tavg_field, 'cell_methods', trim(method_string))
 
    if (avail_tavg_fields(nfield)%scale_factor /= undefined_nf) then
      call add_attrib_io_field(tavg_field, 'scale_factor',avail_tavg_fields(nfield)%scale_factor)
    endif
 
-   call add_attrib_io_field(tavg_field,'_FillValue',avail_tavg_fields(nfield)%fill_value )
-   call add_attrib_io_field(tavg_field,'missing_value',avail_tavg_fields(nfield)%missing_value )
+!*** note: missing_value is a deprecated feature in CF1.4, and hence nco 4 versions, but
+!          is added here because other software packages may require it
+   call add_attrib_io_field(tavg_field,'_FillValue',   avail_tavg_fields(nfield)%fill_value )
+   call add_attrib_io_field(tavg_field,'missing_value',avail_tavg_fields(nfield)%fill_value )
 
 !-----------------------------------------------------------------------
 !EOC
 
  end subroutine tavg_add_attrib_io_field_ccsm 
+
+!***********************************************************************
+!BOP
+! !IROUTINE: tavg_get_cell_method_string
+! !INTERFACE:
+
+ subroutine tavg_get_cell_method_string (method_integer,method_string)
+ 
+! !DESCRIPTION:
+!  This routine determines the string associated with the cell_method
+!
+! !REVISION HISTORY:
+!  same as module
+
+! !INPUT PARAMETERS:
+ integer (i4), intent(in) ::  &
+    method_integer
+
+! !OUTPUT PARAMETERS:
+ character (char_len), intent(out) ::  &
+    method_string
+
+!EOP
+!BOC
+
+   method_string = char_blank
+
+   select case (method_integer)
+
+     case(tavg_method_avg)
+        method_string='time: mean'
+
+     case(tavg_method_min)
+        method_string='time: minimum'
+
+     case(tavg_method_max)
+        method_string='time: maximum'
+
+     case(tavg_method_qflux)
+        method_string='time: mean'
+
+     case default
+        write(exit_string,'(a,1x,i4)') 'FATAL ERROR:  unknown method = ', method_integer
+        call document ('tavg_add_attrib_io_field_ccsm', exit_string)
+        call exit_POP (sigAbort,exit_string,out_unit=stdout)
+
+   end select
+
+!EOC
+
+ end subroutine tavg_get_cell_method_string 
 
 !***********************************************************************
 !BOP
@@ -4474,16 +4602,16 @@
 !  local variables
 !
 !-----------------------------------------------------------------------
-   real (r4), dimension(km) ::  &
-      ZT_R4,      &! single precision array
-      ZW_R4,      &! single precision array
-      ZW_BOT_R4    ! single precision array
+   real (rtavg), dimension(km) ::  &
+      ZT_R,      &! single/double precision array
+      ZW_R,      &! single/double precision array
+      ZW_BOT_R    ! single/double precision array
 
-   real (r4), dimension(0:km) ::  &
-      MOC_Z_R4
+   real (rtavg), dimension(0:km) ::  &
+      MOC_Z_R
 
-   real (r4), dimension(1000) ::  &
-      LAT_AUX_GRID_R4
+   real (rtavg), dimension(1000) ::  &
+      LAT_AUX_GRID_R
 
    integer (int_kind) ::  &
       ii, n, ndims   
@@ -4496,65 +4624,85 @@
 
    !*** z_t
    ii=ii+1
-   ZT_R4 = zt 
+   ZT_R = zt 
    ccsm_coordinates(ii,ns) = construct_io_field('z_t',zt_dim,                 &
                          long_name='depth from surface to midpoint of layer', &
                          units    ='centimeters',                             &
-                         r1d_array =ZT_R4)
+#ifdef TAVG_R8
+                         d1d_array =ZT_R)
+#else
+                         r1d_array =ZT_R)
+#endif
 
    call add_attrib_io_field(ccsm_coordinates(ii,ns), 'positive', 'down')
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZT_R4(1))
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZT_R4(km))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZT_R(1))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZT_R(km))
 
    !*** z_t
    ii=ii+1
-   ZT_150m_R4 = zt(1:zt_150m_levs)
+   ZT_150m_R = zt(1:zt_150m_levs)
    ccsm_coordinates(ii,ns) = construct_io_field('z_t_150m',zt_150m_dim,       &
                          long_name='depth from surface to midpoint of layer', &
                          units    ='centimeters',                             &
-                         r1d_array =ZT_150m_R4)
+#ifdef TAVG_R8
+                         d1d_array =ZT_150m_R)
+#else
+                         r1d_array =ZT_150m_R)
+#endif
 
    call add_attrib_io_field(ccsm_coordinates(ii,ns), 'positive', 'down')
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZT_150m_R4(1))
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZT_150m_R4(zt_150m_levs))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZT_150m_R(1))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZT_150m_R(zt_150m_levs))
 
    !*** z_w
    ii=ii+1
-   ZW_R4(1) = c0 
-   ZW_R4(2:km) = zw(1:km-1)
+   ZW_R(1) = c0 
+   ZW_R(2:km) = zw(1:km-1)
    ccsm_coordinates(ii,ns) = construct_io_field('z_w',zw_dim,                 &
                          long_name='depth from surface to top of layer',      &
                          units    ='centimeters',                             &
-                         r1d_array =ZW_R4)
+#ifdef TAVG_R8
+                         d1d_array =ZW_R)
+#else
+                         r1d_array =ZW_R)
+#endif
 
    call add_attrib_io_field(ccsm_coordinates(ii,ns), 'positive', 'down')
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZW_R4(1 ))
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZW_R4(km))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZW_R(1 ))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZW_R(km))
 
    !*** z_w_top
    ii=ii+1
-   ZW_R4(1) = c0  ! same as z_w
-   ZW_R4(2:km) = zw(1:km-1)
+   ZW_R(1) = c0  ! same as z_w
+   ZW_R(2:km) = zw(1:km-1)
    ccsm_coordinates(ii,ns) = construct_io_field('z_w_top',zw_dim_top,         &
                          long_name='depth from surface to top of layer',      &
                          units    ='centimeters',                             &
-                         r1d_array =ZW_R4)
+#ifdef TAVG_R8
+                         d1d_array =ZW_R)
+#else
+                         r1d_array =ZW_R)
+#endif
 
    call add_attrib_io_field(ccsm_coordinates(ii,ns), 'positive', 'down')
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZW_R4(1 ))
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZW_R4(km))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZW_R(1 ))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZW_R(km))
 
    !*** z_w_bot
    ii=ii+1
-   ZW_BOT_R4(1:km) = zw(1:km)
+   ZW_BOT_R(1:km) = zw(1:km)
    ccsm_coordinates(ii,ns) = construct_io_field('z_w_bot',zw_dim_bot,         &
                          long_name='depth from surface to bottom of layer',   &
                          units    ='centimeters',                             &
-                         r1d_array =ZW_BOT_R4)
+#ifdef TAVG_R8
+                         d1d_array =ZW_BOT_R)
+#else
+                         r1d_array =ZW_BOT_R)
+#endif
 
    call add_attrib_io_field(ccsm_coordinates(ii,ns), 'positive', 'down')
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZW_BOT_R4(1 ))
-   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZW_BOT_R4(km))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', ZW_BOT_R(1 ))
+   call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', ZW_BOT_R(km))
 
 
    if (ltavg_moc_diags(ns) .or. ltavg_n_heat_trans(ns)  .or. ltavg_n_salt_trans(ns)) then
@@ -4562,35 +4710,43 @@
      ii=ii+1
 
      if (n_lat_aux_grid+1 > 1000) then
-        exit_string = 'FATAL ERROR:  must increase dimension of LAT_AUX_GRID_R4'
+        exit_string = 'FATAL ERROR:  must increase dimension of LAT_AUX_GRID_R'
         call document ('tavg_construct_ccsm_coordinates', exit_string)
         call exit_POP (sigAbort,exit_string,out_unit=stdout)
      endif
 
-     LAT_AUX_GRID_R4 = 0
-     LAT_AUX_GRID_R4(1:n_lat_aux_grid+1) = lat_aux_edge(1:n_lat_aux_grid+1)
+     LAT_AUX_GRID_R = 0
+     LAT_AUX_GRID_R(1:n_lat_aux_grid+1) = lat_aux_edge(1:n_lat_aux_grid+1)
      ccsm_coordinates(ii,ns) = construct_io_field('lat_aux_grid',lat_aux_grid_dim, &
                            long_name='latitude grid for transport diagnostics', &
                            units    ='degrees_north',                           &
-                           r1d_array =LAT_AUX_GRID_R4(1:n_lat_aux_grid+1))
-     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', LAT_AUX_GRID_R4(1 ))
-     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', LAT_AUX_GRID_R4(n_lat_aux_grid+1))
+#ifdef TAVG_R8
+                           d1d_array =LAT_AUX_GRID_R(1:n_lat_aux_grid+1))
+#else
+                           r1d_array =LAT_AUX_GRID_R(1:n_lat_aux_grid+1))
+#endif
+     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', LAT_AUX_GRID_R(1 ))
+     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', LAT_AUX_GRID_R(n_lat_aux_grid+1))
    endif
 
    if (ltavg_moc_diags(ns)) then
      !*** moc_z
      ii=ii+1
 
-     MOC_Z_R4(0) = c0 
-     MOC_Z_R4(1:km) = zw(1:km)
+     MOC_Z_R(0) = c0 
+     MOC_Z_R(1:km) = zw(1:km)
      ccsm_coordinates(ii,ns) = construct_io_field('moc_z',moc_z_dim,               &
                            long_name='depth from surface to top of layer',      &
                            units    ='centimeters',                             &
-                           r1d_array =MOC_Z_R4)
+#ifdef TAVG_R8
+                           d1d_array =MOC_Z_R)
+#else
+                           r1d_array =MOC_Z_R)
+#endif
 
      call add_attrib_io_field(ccsm_coordinates(ii,ns), 'positive', 'down')
-     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', MOC_Z_R4(0 ))
-     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', MOC_Z_R4(km))
+     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_min', MOC_Z_R(0 ))
+     call add_attrib_io_field(ccsm_coordinates(ii,ns), 'valid_max', MOC_Z_R(km))
 
    endif ! ltavg_moc_diags
 
@@ -4643,49 +4799,53 @@
 !
 !-----------------------------------------------------------------------
 
-   integer (int_kind) :: ii, n
+   integer (int_kind) :: ii, num
 
-   real (r4), dimension(km)   ::  &
-      DZ_R4   
+   real (rtavg), dimension(km)   ::  &
+      DZ_R
 
-   real (r4), dimension(0:km-1) ::  &
-      DZW_R4
+   real (rtavg), dimension(0:km-1) ::  &
+      DZW_R
 
    real (r8), dimension(nx_block,ny_block,max_blocks_clinic) ::  &
-      TLON_DEG, TLAT_DEG, ULON_DEG, ULAT_DEG
+      ULON_DEG, ULAT_DEG
 
-   real (r4)          :: missing_value
-   integer (int_kind) :: missing_value_i
-   real (r8)          :: missing_value_d
+   integer (i4)       :: fill_value_i
+   real (r8)          :: fill_value_d
 
    logical (log_kind) ::  &
       full_header
 
    save
 
-   missing_value   = undefined_nf_r4
-   missing_value_d = undefined_nf_r8
-   missing_value_i = undefined_nf_int
+   fill_value_i = undefined_nf_int
+   fill_value_d = undefined_nf_r8
 
    ii=0
 
    !*** dz
    ii=ii+1
-   DZ_R4 = dz 
-   ccsm_time_invar(ii,ns) = construct_io_field('dz',zt_dim,                    &
+   DZ_R = dz 
+   ccsm_time_invar(ii,ns) = construct_io_field('dz',zt_dim,                 &
                                 long_name='thickness of layer k',           &
                                 units    ='centimeters',                    &
-                                r1d_array =DZ_R4)
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value )
+#ifdef TAVG_R8
+                                d1d_array =DZ_R)
+#else
+                                r1d_array =DZ_R)
+#endif
 
    !*** dzw
    ii=ii+1
-   DZW_R4(0:) = dzw(0:km-1)
-   ccsm_time_invar(ii,ns) = construct_io_field('dzw',zw_dim,                   &
+   DZW_R(0:) = dzw(0:km-1)
+   ccsm_time_invar(ii,ns) = construct_io_field('dzw',zw_dim,                       &
                                 long_name='midpoint of k to midpoint of k+1',      &
                                 units    ='centimeters',                           &
-                                r1d_array =DZW_R4)
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value )
+#ifdef TAVG_R8
+                                d1d_array =DZW_R)
+#else
+                                r1d_array =DZW_R)
+#endif
 
 !-----------------------------------------------------------------------
 !
@@ -4725,25 +4885,23 @@
          units    ='degrees_north',                   &
          d2d_array =ULAT_DEG(:,:,:) )
 
-   !*** TLONG
+   !*** TLONG (degrees)
    ii=ii+1
 
-    TLON_DEG = TLON*radian
     ccsm_time_invar(ii,ns) = construct_io_field(  &
         'TLONG', dim1=i_dim, dim2=j_dim,              &
          long_name='array of t-grid longitudes',      &
          units    ='degrees_east',                    &
-         d2d_array =TLON_DEG(:,:,:) )
+         d2d_array =TLOND(:,:,:) )
 
-   !*** TLAT
+   !*** TLAT (degrees)
    ii=ii+1
 
-    TLAT_DEG = TLAT*radian
     ccsm_time_invar(ii,ns) = construct_io_field(  &
         'TLAT', dim1=i_dim, dim2=j_dim,               &
          long_name='array of t-grid latitudes',       &
          units    ='degrees_north',                   &
-         d2d_array =TLAT_DEG(:,:,:) )
+         d2d_array =TLATD(:,:,:) )
 
    !*** KMT
    ii=ii+1
@@ -4753,7 +4911,6 @@
          long_name='k Index of Deepest Grid Cell on T Grid',  &
          coordinates = "TLONG TLAT",                          &
          i2d_array =KMT(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_i )
 
    !*** KMU
    ii=ii+1
@@ -4763,7 +4920,6 @@
          long_name='k Index of Deepest Grid Cell on U Grid',  &
          coordinates = "ULONG ULAT",                          &
          i2d_array =KMU(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_i )
 
 
    !*** REGION_MASK
@@ -4774,7 +4930,6 @@
          long_name='basin index number (signed integers)',    &
          coordinates = "TLONG TLAT",                          &
          i2d_array =REGION_MASK(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_i )
 
    !*** UAREA
    ii=ii+1
@@ -4785,7 +4940,6 @@
          units    ='centimeter^2',                            &
          coordinates = "ULONG ULAT",                          &
          d2d_array =UAREA(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** TAREA
    ii=ii+1
@@ -4796,7 +4950,6 @@
          units    ='centimeter^2',                            &
          coordinates = "TLONG TLAT",                          &
          d2d_array =TAREA(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** HU
    ii=ii+1
@@ -4807,7 +4960,6 @@
          units='centimeter',                                  &
          coordinates = "ULONG ULAT",                          &
          d2d_array =HU(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** HT
    ii=ii+1
@@ -4818,7 +4970,6 @@
          units='centimeter',                                  &
          coordinates = "TLONG TLAT",                          &
          d2d_array =HT(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** DXU
    ii=ii+1
@@ -4829,7 +4980,6 @@
          units='centimeters',                                 &
          coordinates = "ULONG ULAT",                          &
          d2d_array =DXU(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** DYU
    ii=ii+1
@@ -4840,7 +4990,6 @@
          units='centimeters',                                 &
          coordinates = "ULONG ULAT",                          &
          d2d_array =DYU(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** DXT
    ii=ii+1
@@ -4851,7 +5000,6 @@
          units='centimeters',                                 &
          coordinates = "TLONG TLAT",                          &
          d2d_array =DXT(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** DYT
    ii=ii+1
@@ -4862,7 +5010,6 @@
          units='centimeters',                                 &
          coordinates = "TLONG TLAT",                          &
          d2d_array =DYT(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** HTN
    ii=ii+1
@@ -4873,7 +5020,6 @@
          units='centimeters',                                 &
          coordinates = "TLONG TLAT",                          &
          d2d_array =HTN(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** HTE
    ii=ii+1
@@ -4884,7 +5030,6 @@
          units='centimeters',                                 &
          coordinates = "TLONG TLAT",                          &
          d2d_array =HTE(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** HUS
    ii=ii+1
@@ -4895,7 +5040,6 @@
          units='centimeters',                                 &
          coordinates = "ULONG ULAT",                          &
          d2d_array =HUS(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** HUW
    ii=ii+1
@@ -4906,7 +5050,6 @@
          units='centimeters',                                 &
          coordinates = "ULONG ULAT",                          &
          d2d_array =HUW(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** ANGLE
    ii=ii+1
@@ -4917,7 +5060,6 @@
          units='radians',                                     &
          coordinates = "ULONG ULAT",                          &
          d2d_array =ANGLE(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    !*** ANGLET
    ii=ii+1
@@ -4928,12 +5070,15 @@
          units='radians',                                          &
          coordinates = "TLONG TLAT",                               &
          d2d_array =ANGLET(:,:,:) )
-   call add_attrib_io_field(ccsm_time_invar(ii,ns),'missing_value',missing_value_d )
 
    endif ! full_header
 
 
-   ! after all time-invariant arrays are defined, define the total number
+!-----------------------------------------------------------------------
+!
+!   after all time-invariant arrays are defined, define the total number
+!
+!-----------------------------------------------------------------------
    num_ccsm_time_invar(ns) = ii
 
    if (num_ccsm_time_invar(ns)  > max_num_ccsm_time_invar) then
@@ -4942,6 +5087,29 @@
      call exit_POP (sigAbort,exit_string,out_unit=stdout)
    endif
 
+
+!-----------------------------------------------------------------------
+!
+!   Finally, add _FillValue and missing_value attributes to all fields
+!   NOTE: missing_value is identical to _FillValue
+!
+!-----------------------------------------------------------------------
+
+   do num = 1, num_ccsm_time_invar(ns)
+     if (trim(ccsm_time_invar(num,ns)%short_name) == 'REGION_MASK'  .or.   &
+         trim(ccsm_time_invar(num,ns)%short_name) == 'KMT'          .or.   &
+         trim(ccsm_time_invar(num,ns)%short_name) == 'KMU'                 ) then
+         call add_attrib_io_field(ccsm_time_invar(num,ns),'_FillValue'   ,fill_value_i )
+         call add_attrib_io_field(ccsm_time_invar(num,ns),'missing_value',fill_value_i )
+     elseif(trim(ccsm_time_invar(num,ns)%short_name) == 'dz'  .or.   &
+         trim(ccsm_time_invar(num,ns)%short_name) == 'dzw'                 ) then
+         call add_attrib_io_field(ccsm_time_invar(num,ns),'_FillValue'   ,undefined_nf )
+         call add_attrib_io_field(ccsm_time_invar(num,ns),'missing_value',undefined_nf )
+     else
+         call add_attrib_io_field(ccsm_time_invar(num,ns),'_FillValue'   ,fill_value_d )
+         call add_attrib_io_field(ccsm_time_invar(num,ns),'missing_value',fill_value_d )
+     endif
+   enddo
 
 !-----------------------------------------------------------------------
 !EOC
@@ -5093,16 +5261,16 @@
                          units    ='watt/m^2/degK^4',             &
                          d0d_array =stefan_boltzmann)
 
-   !*** latent_heat_vapor
+   !*** latent_heat_vapor_mks
    ii=ii+1
-   ccsm_scalars(ii,ns) = construct_io_field('latent_heat_vapor',     &
+   ccsm_scalars(ii,ns) = construct_io_field('latent_heat_vapor',  &
                          long_name='Latent Heat of Vaporization', &
-                         units    ='erg/g',                       &
-                         d0d_array =latent_heat_vapor)
+                         units    ='J/kg',                        &
+                         d0d_array =latent_heat_vapor_mks)
 
    !*** latent_heat_fusion
    ii=ii+1
-   ccsm_scalars(ii,ns) = construct_io_field('latent_heat_fusion',    &
+   ccsm_scalars(ii,ns) = construct_io_field('latent_heat_fusion', &
                          long_name='Latent Heat of Fusion',       &
                          units    ='erg/g',                       &
                          d0d_array =latent_heat_fusion)
@@ -5588,13 +5756,13 @@
         io_dims(:) = io_dims_labels(:,indx)
         id = avail_tavg_labels_id(indx)
         nftype = 'char'
-        implied_time_dim = .false.
+        lactive_time_dim = .false.
  
 
       call data_set_nstd_ccsm (tavg_file_desc, 'write',    &
                                id, ndims, io_dims, nftype, &
-              implied_time_dim=implied_time_dim,           &
-                   data_1d_ch = data_1d_ch                 )
+                               data_1d_ch = data_1d_ch     )
+
        endif
 
       !*** determine index of transport_regions
@@ -5620,22 +5788,19 @@
         io_dims(:) = io_dims_labels(:,indx)
         id = avail_tavg_labels_id(indx)
         nftype = 'char'
-        implied_time_dim = .false.
+        lactive_time_dim = .false.
  
-
          call data_set_nstd_ccsm (tavg_file_desc, 'write',    &
                                   id, ndims, io_dims, nftype, &
-                 implied_time_dim=implied_time_dim,           &
-                      data_1d_ch = data_1d_ch                 )
+                                  data_1d_ch = data_1d_ch     )
        endif
 
+       lactive_time_dim = .true.
+       call write_nstd_netcdf(tavg_file_desc,moc_id,5,  &
+           io_dims_nstd_ccsm(:,1),'float',              &  ! <-- generalize later
+           lactive_time_dim,                            &
+           indata_4d_r4=TAVG_MOC_G)
 
-       implied_time_dim = .true.
-       call write_nstd_netcdf(                          &
-          tavg_file_desc,moc_id,1,5,io_dims_nstd_ccsm(:,1),&
-          'float',                                         &  ! <-- generalize later
-          implied_time_dim=implied_time_dim,               &
-          indata_4d_r4=TAVG_MOC_G)
    endif
 
    !*** transport variables
@@ -5666,13 +5831,12 @@
         io_dims(:) = io_dims_labels(:,indx)
         id = avail_tavg_labels_id(indx)
         nftype = 'char'
-        implied_time_dim = .false.
+        lactive_time_dim = .false.
  
 
       call data_set_nstd_ccsm (tavg_file_desc, 'write',    &
                                id, ndims, io_dims, nftype, &
-              implied_time_dim=implied_time_dim,           &
-                   data_1d_ch = data_1d_ch                 )
+                               data_1d_ch = data_1d_ch     )
        endif
 
 
@@ -5680,21 +5844,21 @@
 
    if (ltavg_n_heat_trans(ns)) then
        !*** N_HEAT
-       implied_time_dim = .true.
-       call write_nstd_netcdf(                          &
-          tavg_file_desc,n_heat_id,1,4,io_dims_nstd_ccsm(:,2),& !<-- generalize later
-          'float',                                         &  ! <-- generalize later
-          implied_time_dim=implied_time_dim,               &
+       lactive_time_dim = .true.
+       call write_nstd_netcdf(                              &
+          tavg_file_desc,n_heat_id,4,io_dims_nstd_ccsm(:,2),& !<-- generalize later
+          'float',                                          &  ! <-- generalize later
+           lactive_time_dim,                                &
           indata_3d_r4=TAVG_N_HEAT_TRANS_G)
    endif
 
    if (ltavg_n_salt_trans(ns)) then
        !*** N_SALT
-       implied_time_dim = .true.
-       call write_nstd_netcdf(                          &
-          tavg_file_desc,n_salt_id,1,4,io_dims_nstd_ccsm(:,3),& !<-- generalize later
+       lactive_time_dim = .true.
+       call write_nstd_netcdf(                             &
+          tavg_file_desc,n_salt_id,4,io_dims_nstd_ccsm(:,3),& !<-- generalize later
           'float',                                         &  ! <-- generalize later
-          implied_time_dim=implied_time_dim,               &
+           lactive_time_dim,                               &
           indata_3d_r4=TAVG_N_SALT_TRANS_G)
    endif
 
@@ -5981,7 +6145,7 @@
      PSI_T(:,:,iblock)= TAVG_BUF_2D(:,:,iblock,tavg_loc_BSF)
    enddo
 
-  !$OMP PARALLEL DO PRIVATE (iblock, i,j,ii,jj)
+! !$OMP PARALLEL DO PRIVATE (iblock, i,j,ii,jj)  ! cannot exit inside a threaded loop
    do iblock=1,nblocks_clinic
 
       PSI_T(:,:,iblock) = TAVG_BUF_2D(:,:,iblock,tavg_loc_BSF)
@@ -6005,7 +6169,7 @@
       TAVG_BUF_2D(:,:,iblock,tavg_loc_BSF) = PSI_U(:,:,iblock)
 
    end do
-  !$OMP END PARALLEL DO
+! !$OMP END PARALLEL DO
 
  
    !*** stop bsf timer
@@ -6213,7 +6377,6 @@
         long_name='Meridional Overturning Circulation',  &
         units='Sverdrups',                               &
         coordinates='lat_aux_grid moc_z moc_components transport_region time',&
-        nftype='float'   ,                               &
         nstd_fields=avail_tavg_nstd_fields,              &
         num_nstd_fields=num_avail_tavg_nstd_fields,      &
         max_nstd_fields=max_avail_tavg_nstd_fields       )
@@ -6761,8 +6924,8 @@
       max_days             ! maximum number of days per month in a year
 
 
-   real (r8), dimension(nx_block,ny_block,max_blocks_clinic) ::  &
-     TLATD, TLOND        ! lat/lon of T points in degrees
+
+
 
 !-----------------------------------------------------------------------
 !
@@ -6857,8 +7020,8 @@
    SAVG_0D_MASK = c0
 
    !*** determine masks for each region
-   TLATD = TLAT*radian
-   TLOND = TLON*radian
+
+
 
    do iblock = 1,nblocks_clinic
       this_block = get_block(blocks_clinic(iblock),iblock) 
@@ -6988,6 +7151,7 @@
        write (stdout,*) trim(SAVG_0D_NAME(n_reg)),': ',  &
                         SAVG_0D(n_reg)
      enddo
+     call POP_IOUnitsFlush(POP_stdout) ; call POP_IOUnitsFlush(stdout)
 
    endif
  
@@ -6997,6 +7161,71 @@
 !EOC
 
   end subroutine tavg_local_spatial_avg
+ 
+!***********************************************************************
+!BOP
+! !IROUTINE: final_tavg
+! !INTERFACE:
+
+ subroutine final_tavg
+
+! !DESCRIPTION:
+!  This routine closes all tavg files that are still open
+!
+! !REVISION HISTORY:
+!  same as module
+
+!EOP
+!BOC
+
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+
+    integer (int_kind) :: n, nfield, ns   ! loop indices
+
+    do ns=1,nstreams
+      if (tavg_streams(ns)%ltavg_file_is_open) then
+        if (my_task.eq.master_task) then
+          write(stdout,*) "tavg file ", trim(tavg_file_desc(ns)%full_name), &
+                          " is still open... closing."
+        end if
+        ! Lots of variable clean up (necessary?)
+        call destroy_io_field(time_coordinate(1,ns))
+        do n=1,num_ccsm_coordinates
+           call destroy_io_field(ccsm_coordinates(n,ns))
+        end do
+        do n=1,num_ccsm_time_invar(ns)
+           call destroy_io_field(ccsm_time_invar(n,ns))
+        end do
+        do n=1,num_ccsm_scalars(ns)
+           call destroy_io_field(ccsm_scalars(n,ns))
+        end do
+        n=0
+        do nfield = 1, num_avail_tavg_fields
+           if (tavg_in_this_stream(nfield, ns)) then
+              n = n+1
+              call destroy_io_field(tavg_streams(ns)%tavg_fields(n))
+           end if
+        end do
+
+        tavg_streams(ns)%tavg_num_time_slices = 0
+        deallocate(tavg_streams(ns)%tavg_fields)
+
+        ! Close the file 
+        call data_set(tavg_file_desc(ns), 'close')
+
+        ! More variable clean up
+        call destroy_file(tavg_file_desc(ns))
+      end if
+    end do
+
+!-----------------------------------------------------------------------
+!EOC
+
+  end subroutine final_tavg
  
  end module tavg
 

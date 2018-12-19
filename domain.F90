@@ -12,7 +12,7 @@
 !  routines in the block, distribution modules.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: domain.F90 12674 2008-10-31 22:21:32Z njn01 $
+!  SVN:$Id: domain.F90 43213 2013-01-11 18:24:48Z mlevy@ucar.edu $
 
 ! !USES:
 
@@ -101,7 +101,7 @@
        ew_boundary_type,         &! type of domain bndy in each logical
        ns_boundary_type           !    direction (ew is i, ns is j)
 
-    integer (int_kind) :: &! decomposition info
+    integer (int_kind), public :: &! decomposition info
        nprocs_clinic     ,&! num of processors in baroclinic dist
        nprocs_tropic       ! num of processors in barotropic dist
 
@@ -198,6 +198,8 @@
       clinicDistributionMethod = POP_distribMethodRake
    case ('spacecurve','Spacecurve','SPACECURVE')
       clinicDistributionMethod = POP_distribMethodSpacecurve
+   case ('blockone','Blockone','BLOCKONE')
+      clinicDistributionMethod = POP_distribMethodBlockone
    case default
       call POP_ErrorSet(errorCode, &
          'POP_DomainInit: unknown clinic distribution type')
@@ -211,6 +213,8 @@
       tropicDistributionMethod = POP_distribMethodRake
    case ('spacecurve','Spacecurve','SPACECURVE')
       tropicDistributionMethod = POP_distribMethodSpacecurve
+   case ('blockone','Blockone','BLOCKONE')
+      tropicDistributionMethod = POP_distribMethodBlockone
    case default
       call POP_ErrorSet(errorCode, &
          'POP_DomainInit: unknown tropic distribution type')

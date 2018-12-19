@@ -9,7 +9,7 @@
 !  for restarting a POP simulation.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: restart.F90 20992 2010-02-12 23:01:33Z njn01 $
+!  SVN:$Id: restart.F90 59361 2014-04-20 22:24:58Z mlevy@ucar.edu $
 !
 ! !USES:
 
@@ -53,6 +53,7 @@
    use registry
    use passive_tracers, only: write_restart_passive_tracers
    use overflows
+   use overflow_type
 
    implicit none
    private
@@ -1114,7 +1115,8 @@
    !*** note that this option over-rides others
 
    if (check_time_flag(restart_flag) .or.   &
-      (check_time_flag(cpl_write_restart) .and. eod) ) then
+       (check_time_flag(cpl_write_restart) .and. &
+        (nsteps_this_interval.eq.nsteps_per_interval)) ) then
 
       lrestart_write = .true.
       restart_type = char_blank
@@ -1124,7 +1126,8 @@
 
    !*** turn off cpl_write_restart if necessary
 
-   if  (check_time_flag(cpl_write_restart) .and. eod) & 
+   if (check_time_flag(cpl_write_restart) .and. & 
+       (nsteps_this_interval.eq.nsteps_per_interval)) &
      call override_time_flag(cpl_write_restart, value=.false.)
 
 

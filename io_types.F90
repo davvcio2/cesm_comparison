@@ -13,7 +13,7 @@
 !  and an io unit manager.
 !
 ! !REVISION HISTORY:
-!  SVN:$Id: io_types.F90 19531 2009-11-19 19:05:44Z njn01 $
+!  SVN:$Id: io_types.F90 29587 2011-08-03 22:59:39Z mvertens $
 
 ! !USES:
 
@@ -53,13 +53,11 @@
       character(char_len)                         :: units
       character(char_len)                         :: coordinates
       character(4)                                :: grid_loc
-      real(r4)                                    :: missing_value
       real(r4), dimension(2)                      :: valid_range
       integer(i4)                                 :: id
       integer(i4)                                 :: nfield_dims
       integer(i4)                                 :: field_loc
       integer(i4)                                 :: field_type
-      integer(int_kind)                           :: missing_value_i
       type (io_dim), dimension(4)                 :: field_dim
       character(char_len), dimension(:), pointer  :: add_attrib_cname
       character(char_len), dimension(:), pointer  :: add_attrib_cval
@@ -122,7 +120,7 @@
       integer(i4)                                :: current_record ! bin
       logical(log_kind)                          :: readonly
       logical(log_kind)                          :: ldefine
-      type (File_desc_t) :: File(2)
+      type (File_desc_t)                         :: File
    end type
 
 ! !PUBLIC MEMBER FUNCTIONS:
@@ -162,7 +160,7 @@
       rec_type_real = -2,     &! record length to use for binary files
       rec_type_dbl  = -3       !
 
-   character (7), parameter, public :: &
+   character (12), public :: &
       nml_filename = 'pop2_in'  ! namelist input file name
 
    integer (i4), public :: &
@@ -1741,8 +1739,6 @@ contains
        units,            &
        coordinates,      &
        grid_loc,         &
-       missing_value,    &
-       missing_value_i,  &
        valid_range,      &
        field_loc,        &
        field_id,         &
@@ -1787,14 +1783,8 @@ contains
    character(4), intent(in), optional :: &
       grid_loc                  ! position of field in staggered grid
 
-   real (r4), intent(in), optional :: &
-      missing_value             ! value for missing points (eg land)
-
    real (r4), intent(in), dimension(2), optional :: &
       valid_range               ! valid range (min,max) for field
-
-   integer (int_kind), intent(in), optional :: &  
-      missing_value_i           ! missing value for integer arrays
 
    integer (i4), intent(in), optional :: &  ! for ghost cell updates
       field_loc,               &! staggering location
@@ -1874,16 +1864,6 @@ contains
    descriptor%grid_loc = '    '
    if (present(grid_loc)) then
       descriptor%grid_loc = grid_loc
-   endif
-
-   descriptor%missing_value = undefined
-   if (present(missing_value)) then
-      descriptor%missing_value = missing_value
-   endif
-
-   descriptor%missing_value_i = undefined
-   if (present(missing_value_i)) then
-      descriptor%missing_value_i = missing_value_i
    endif
 
    descriptor%valid_range = undefined
@@ -2103,8 +2083,6 @@ contains
    descriptor%coordinates= char_blank
    descriptor%grid_loc   = '    '
 
-   descriptor%missing_value   = undefined
-   descriptor%missing_value_i = undefined
    descriptor%valid_range     = undefined
    descriptor%id              = 0
    descriptor%nfield_dims     = 4
@@ -3066,14 +3044,6 @@ contains
 
    select case (trim(att_name))
 
-   case ('missing_value','MISSING_VALUE')
-      att_value = iofield%missing_value
-      att_exists = .true.
-
-   case ('missing_value_i','MISSING_VALUE_I')
-      att_value = iofield%missing_value_i
-      att_exists = .true.
-
    case ('valid_range','VALID_RANGE')
       att_exists = .true.
       !att_value = iofield%valid_range
@@ -3343,11 +3313,16 @@ contains
    lredirect_stdout = .false.
    log_filename = 'pop.out'
    luse_pointer_files = .false.
+#ifdef CCSMCOUPLED
+   pointer_filename = 'rpointer.ocn' // trim(inst_suffix)
+#else
    pointer_filename = 'pop2_pointer'
+#endif
    num_iotasks = 1         ! set default num io tasks
 
    if (my_task == master_task) then
 #ifdef CCSMCOUPLED
+      nml_filename = 'pop2_in' // trim(inst_suffix)
       call get_unit(nml_in)
 #endif
       open (nml_in, file=nml_filename, status='old',iostat=nml_error)
@@ -3391,7 +3366,8 @@ contains
 #else
    if (my_task == master_task) then
       stdout = shr_file_getUnit()
-      call shr_file_setIO('ocn_modelio.nml',stdout)
+      char_tmp = 'ocn_modelio.nml' // trim(inst_suffix)
+      call shr_file_setIO(char_tmp,stdout)
    end if
 #endif
 

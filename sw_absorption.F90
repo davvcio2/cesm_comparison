@@ -39,7 +39,7 @@
 !   held fixed over the month in this implementation.
 
 ! !REVISION HISTORY:
-!  SVN:$Id: sw_absorption.F90 22832 2010-05-07 23:05:11Z njn01 $
+!  SVN:$Id: sw_absorption.F90 26603 2011-01-28 23:09:02Z njn01 $
 
 ! !USES:
 
@@ -57,7 +57,7 @@
    use time_management
    use prognostic
    use forcing_shf
-   use tavg, only: define_tavg_field, tavg_requested, accumulate_tavg_field
+   use tavg, only: define_tavg_field, accumulate_tavg_field
    use exit_mod
    use registry, only: registry_match
 
@@ -898,15 +898,11 @@
         endif
         
         if (k == 1) then
-          if (tavg_requested(tavg_QSW_HTP)) then
              call accumulate_tavg_field(WORK*(sw_absorb(0)-sw_absorb(1))/hflux_factor, &
                                         tavg_QSW_HTP,bid,k)
-          endif
         endif
-        if (tavg_requested(tavg_QSW_3D)) then
            call accumulate_tavg_field(WORK*sw_absorb(k-1)/hflux_factor, &
                                       tavg_QSW_3D,bid,k)
-        endif
  
       case ('chlorophyll')
  
@@ -933,15 +929,11 @@
         endif
 
         if (k == 1) then
-          if (tavg_requested(tavg_QSW_HTP)) then
              call accumulate_tavg_field(WORK*(TRANSKM1(:,:,bid)-TRANS(:,:,bid))/hflux_factor, &
                                         tavg_QSW_HTP,bid,k)
-          endif
         endif
-        if (tavg_requested(tavg_QSW_3D)) then
            call accumulate_tavg_field(WORK*TRANSKM1(:,:,bid)/hflux_factor, &
                                       tavg_QSW_3D,bid,k)
-        endif
   
         TRANSKM1(:,:,bid) = TRANS(:,:,bid)
  
